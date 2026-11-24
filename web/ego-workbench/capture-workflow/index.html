@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>01 · 片段输入 · Ego 交互数据工作台</title>
+<link rel="stylesheet" href="/ego-capture/style.css">
+<link rel="stylesheet" href="/workflow/workflow.css">
+<script src="/workflow/workflow.js" defer></script>
+</head>
+<body>
+<nav class="capture-tools" aria-label="工作台">
+  <a href="/ego-capture/">采集与处理</a>
+  <a href="/workflow/" aria-current="page">物理交互工作流</a>
+</nav>
+<main>
+  <h1>物理交互工作流</h1>
+  <ol class="nodes" aria-label="工作流节点">
+    <li aria-current="step">01 · 片段输入</li>
+    <li>02 · 物体追踪</li><li>03 · 骨架与手型</li><li>04 · 原动作物理还原</li>
+    <li>05 · 目标手与重定向</li><li>06 · 仿真完善与演化</li>
+    <li>07 · 目标物体配置</li><li>08 · 目标环境与初态</li>
+  </ol>
+  <p class="muted">本发行版开放 01 片段输入。02–08 尚未发布。</p>
+  <section class="card input">
+    <h2>01 · 片段输入</h2>
+    <div class="toolbar">
+      <label>已登记片段 <select id="clip" disabled><option value="">正在读取</option></select></label>
+      <button id="refresh" type="button" class="small">刷新片段</button>
+    </div>
+    <p id="status" role="status">正在读取</p>
+    <div id="preview" hidden>
+      <input id="frame" type="range" min="0" value="0" aria-label="片段预览帧">
+      <p id="time" class="muted"></p>
+      <div class="previews">
+        <figure><figcaption>CAM0</figcaption><img id="cam0" alt="CAM0 原始录制画面"></figure>
+        <figure><figcaption>CAM1</figcaption><img id="cam1" alt="CAM1 原始录制画面"></figure>
+      </div>
+    </div>
+    <a id="capture" href="/ego-capture/">到采集与处理登记片段</a>
+  </section>
+</main>
+</body>
+</html>

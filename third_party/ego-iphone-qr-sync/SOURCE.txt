@@ -1,0 +1,4 @@
+User-supplied Ego-iPhone QR synchronization tool archive, SHA-256 ba2ead7fd0d8d08190c801fb5ad57e6d516dcf27795314fec5b3320689835d42
+qrcode.js is the unchanged first inline script from its time-code HTML page.
+The script retains the MIT QRCode for JavaScript notice and its embedded component notices.
+The source page is based on pycalib, whose Apache-2.0 notice is included.

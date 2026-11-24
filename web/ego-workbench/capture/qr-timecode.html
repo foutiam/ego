@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ego · 采集时间码</title>
+<style>
+body{margin:0;min-height:100svh;display:grid;place-items:center;text-align:center;color:#e8f0f5;background:#101923;font:16px system-ui,sans-serif}
+main{width:min(90vw,66vh,520px);padding:14px 0}h1{font-size:20px;margin:0 0 12px}p{margin:9px 0;line-height:1.5}
+#qr{box-sizing:border-box;width:100%;aspect-ratio:1;padding:5%;background:white}
+#qr[data-ready="false"] > *{visibility:hidden}
+#qr canvas,#qr img{display:block;width:100%;height:auto;image-rendering:pixelated}
+#stamp{font:14px ui-monospace,monospace;color:#9fe2d3}
+#status{font-size:13px;color:#b6c6d4}
+</style>
+<script src="./qr-renderer.js" defer></script><script src="./qr-timecode.js?v=2" defer></script>
+</head>
+<body><main>
+<h1>Ego · 采集时间码</h1>
+<div id="qr" aria-label="采集电脑时钟二维码"></div>
+<p id="stamp"></p><p id="status" role="status">正在连接采集电脑时钟…</p>
+</main></body></html>

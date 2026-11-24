@@ -1,0 +1,176 @@
+{
+  "schema": "glove-tactile-layout-v1",
+  "layout_id": "qnbot-glove-left-1",
+  "layout_version": "1.0.0",
+  "created": "2026-10-06",
+  "purpose": "The one versioned description of which parts of the QNBot glove actually provide tactile measurement, what each reading is a reading of, and which parts stay unknown. Consumers bind regions by region_id, never by array index.",
+  "hand_scope": "left",
+  "evidence_classes": {
+    "A": "vendor-documented (protocol PDF; the pressure-layout figure is an image and was transcribed by hand, so an A geometry claim carries that residual uncertainty)",
+    "B": "first-party measured on this physical unit (cued press probes or recorded session bytes)",
+    "C": "bytes readable, region identity unknown",
+    "D": "invalid or absent"
+  },
+  "hardware": {
+    "sensor_id": "qnbot_glove_left",
+    "device": "generic STM32 CDC device reported by the SDK as the QNBot glove; brand, model and IMU presence are only established to the extent stated below",
+    "usb": {"vid_decimal": 1155, "pid_decimal": 22329, "vid_hex": "0x0483", "pid_hex": "0x5739"},
+    "port_recorded": "COM8",
+    "hand": "left",
+    "hand_evidence": "recorded session metadata declares hand=Left and the wire frame's hand_side byte is 1; the wire code is vendor-documented as 0=right, 1=left",
+    "hand_evidence_class": "B",
+    "hand_confirmed_by_operator_out_of_band": false,
+    "protocol_version": "UNKNOWN",
+    "protocol_version_note": "the vendor PDF carries no version string or date; the SDK packages declare 1.2.0, which is provenance for the reading and not a wire-format guarantee"
+  },
+  "wire": {
+    "frame_bytes": 548,
+    "header": "0xa5 0x5a",
+    "frame_type": 1,
+    "length_field": 546,
+    "data_type": 113,
+    "checksum": "little-endian uint16 at byte 546 = sum of bytes [0, 546) mod 65536",
+    "checksum_kind": "additive sum check, not a CRC",
+    "pressure_offset": 6,
+    "pressure_bytes": 460,
+    "emf_offset": 466,
+    "emf_bytes": 80,
+    "device_timestamp_available": false,
+    "device_timestamp_note": "the frame carries no time field; ordering evidence is the (stream_sequence, frame_sequence) counter pair and time is host arrival time"
+  },
+  "grid": {
+    "rows": 23,
+    "cols": 20,
+    "pressure_index_rule": "pressure_index = row * 20 + col, 0-based",
+    "frame_byte_rule": "frame_byte = pressure_offset + pressure_index",
+    "native_unit": "raw_uint8_counts",
+    "unit_note": "the vendor documents no unit, no calibration curve and no zero definition for these cells, so a reading is a count and never a pressure or a force",
+    "value_range": [0, 255],
+    "mirror_rule": {
+      "applies_to": "the finger strip columns",
+      "rule": "right-hand column c corresponds to left-hand column 19 - c",
+      "evidence_class": "A",
+      "evidence": "protocol PDF page-2 figure, two mirrored panels; transcribed by hand"
+    }
+  },
+  "finger_validity_bits": {
+    "source": "wire valid_mask byte at EMF relative offset 8",
+    "rule": "bit i gates the pose of finger i in the SDK order thumb..pinky; bits 5-7 are reserved with UNKNOWN meaning and are masked off, never equality-tested",
+    "bit_to_group": {"0": "thumb", "1": "index", "2": "middle", "3": "ring", "4": "pinky"},
+    "scope": "gates the pose bytes of that finger, not the pressure cells of that finger"
+  },
+  "geometry": {
+    "per_taxel_metric_position": null,
+    "per_taxel_pitch": null,
+    "coordinate_frame": "glove_taxel_grid",
+    "geometry_source": null,
+    "geometry_evidence_class": "D",
+    "geometry_reason": "the vendor DXF 手指点位示意（平面展开）.dxf was inspected read-only on 2026-10-06: 58916 lines, 854 LINE, 400 LWPOLYLINE, 17 ARC, 3 POINT, 1 MTEXT entities over 15 layers. That is an outline drawing with three isolated points, not a 460-point coordinate table, so it yields no per-taxel coordinates and no pitch. Per-taxel metric geometry therefore stays UNKNOWN and no region carries a position.",
+    "dxf_inspection": {
+      "path": "src/matrixhand/MatrixHand/手指点位示意（平面展开）.dxf",
+      "bytes": 508866,
+      "entities": {"LINE": 854, "LWPOLYLINE": 400, "ARC": 17, "POINT": 3, "MTEXT": 1, "INSERT": 2},
+      "layers": 15,
+      "conclusion": "region outlines at drawing granularity, no taxel index table, planar not a 3D surface",
+      "what_would_change_this": "a vendor taxel coordinate table, or a fitted-plus-held-out measurement against known-size objects"
+    },
+    "not_a_pose_chain": "the EMF finger poses are a separate channel from the pressure grid; no relation between an EMF pose and a pressure cell is documented, so this layout makes none"
+  },
+  "groups": [
+    {"group_id": "glove.left.thumb", "anatomy": "thumb", "shared_region": "hand.thumb", "validity_bit": 0, "member_regions": ["glove.left.thumb.pad.r20", "glove.left.thumb.pad.r21", "glove.left.thumb.pad.r22"], "state": "available", "evidence_class": "B"},
+    {"group_id": "glove.left.index", "anatomy": "index", "shared_region": "hand.index", "validity_bit": 1, "member_regions": ["glove.left.index.pad.r20", "glove.left.index.pad.r21", "glove.left.index.pad.r22"], "state": "available", "evidence_class": "B"},
+    {"group_id": "glove.left.middle", "anatomy": "middle", "shared_region": "hand.middle", "validity_bit": 2, "member_regions": ["glove.left.middle.pad.r20", "glove.left.middle.pad.r21", "glove.left.middle.pad.r22"], "state": "available", "evidence_class": "B"},
+    {"group_id": "glove.left.ring", "anatomy": "ring", "shared_region": "hand.ring", "validity_bit": 3, "member_regions": ["glove.left.ring.pad.r20", "glove.left.ring.pad.r21", "glove.left.ring.pad.r22"], "state": "available", "evidence_class": "B"},
+    {"group_id": "glove.left.pinky", "anatomy": "pinky", "shared_region": "hand.pinky", "validity_bit": 4, "member_regions": ["glove.left.pinky.pad.r20", "glove.left.pinky.pad.r21", "glove.left.pinky.pad.r22"], "state": "available", "evidence_class": "B"},
+    {"group_id": "glove.left.palm", "anatomy": "palm", "shared_region": "hand.palm", "validity_bit": null, "member_regions": ["glove.left.palm.unverified"], "state": "candidate_unverified", "evidence_class": "A", "reason": "the vendor figure places the palm at rows 0-16, but this audit (declared sustained rule, 2026-10-06) measures the 340-cell block firing on 5 of 7 palm presses, on 38 of 49 finger presses and on 0 of 17 rest trials. It therefore reports that a contact exists somewhere and does not report the palm, so the identity stays vendor-only and the region stays excluded from contact", "also_recorded": "the same audit found 3 of the recorded rest baselines stale (median absolute offset 0.0 counts): a stale baseline is what turns a whole trial into an apparent contact, and it is why this audit uses the trial's own per-cell median"}
+  ],
+  "regions": [
+    {"region_id": "glove.left.thumb.pad.r20", "group": "glove.left.thumb", "anatomy": "thumb", "role": "touch", "rows": [20], "cols": [0, 1, 2, 3], "aggregation": "max_over_cells", "native_unit": "raw_uint8_counts", "state": "available", "evidence_class": "B", "evidence": "cued pad press 2026-09-17: 5 trials, +46..+227 counts on these bytes"},
+    {"region_id": "glove.left.thumb.pad.r21", "group": "glove.left.thumb", "anatomy": "thumb", "role": "touch", "rows": [21], "cols": [0, 1, 2, 3], "aggregation": "max_over_cells", "native_unit": "raw_uint8_counts", "state": "available", "evidence_class": "B", "evidence": "cued pad press 2026-09-17: 5 trials"},
+    {"region_id": "glove.left.thumb.pad.r22", "group": "glove.left.thumb", "anatomy": "thumb", "role": "touch", "rows": [22], "cols": [0, 1, 2, 3], "aggregation": "max_over_cells", "native_unit": "raw_uint8_counts", "state": "available", "evidence_class": "B", "evidence": "cued pad press 2026-09-17: 5 trials"},
+    {"region_id": "glove.left.index.pad.r20", "group": "glove.left.index", "anatomy": "index", "role": "touch", "rows": [20], "cols": [4, 5, 6, 7], "aggregation": "max_over_cells", "native_unit": "raw_uint8_counts", "state": "available", "evidence_class": "B", "evidence": "cued pad press 2026-09-17: 4 trials"},
+    {"region_id": "glove.left.index.pad.r21", "group": "glove.left.index", "anatomy": "index", "role": "touch", "rows": [21], "cols": [4, 5, 6, 7], "aggregation": "max_over_cells", "native_unit": "raw_uint8_counts", "state": "available", "evidence_class": "B", "evidence": "cued pad press 2026-09-17: 4 trials"},
+    {"region_id": "glove.left.index.pad.r22", "group": "glove.left.index", "anatomy": "index", "role": "touch", "rows": [22], "cols": [4, 5, 6, 7], "aggregation": "max_over_cells", "native_unit": "raw_uint8_counts", "state": "available", "evidence_class": "B", "evidence": "cued pad press 2026-09-17: 4 trials"},
+    {"region_id": "glove.left.middle.pad.r20", "group": "glove.left.middle", "anatomy": "middle", "role": "touch", "rows": [20], "cols": [8, 9, 10, 11], "aggregation": "max_over_cells", "native_unit": "raw_uint8_counts", "state": "available", "evidence_class": "B", "evidence": "cued pad press 2026-09-17: 5 trials, +40..+131 counts"},
+    {"region_id": "glove.left.middle.pad.r21", "group": "glove.left.middle", "anatomy": "middle", "role": "touch", "rows": [21], "cols": [8, 9, 10, 11], "aggregation": "max_over_cells", "native_unit": "raw_uint8_counts", "state": "available", "evidence_class": "B", "evidence": "cued pad press 2026-09-17: 5 trials"},
+    {"region_id": "glove.left.middle.pad.r22", "group": "glove.left.middle", "anatomy": "middle", "role": "touch", "rows": [22], "cols": [8, 9, 10, 11], "aggregation": "max_over_cells", "native_unit": "raw_uint8_counts", "state": "available", "evidence_class": "B", "evidence": "cued pad press 2026-09-17: 5 trials"},
+    {"region_id": "glove.left.ring.pad.r20", "group": "glove.left.ring", "anatomy": "ring", "role": "touch", "rows": [20], "cols": [14, 15], "aggregation": "max_over_cells", "native_unit": "raw_uint8_counts", "state": "available", "evidence_class": "B", "evidence": "cued pad press 2026-09-17: 4 trials, +71..+168 counts; only these two columns of the vendor's ring block responded"},
+    {"region_id": "glove.left.ring.pad.r21", "group": "glove.left.ring", "anatomy": "ring", "role": "touch", "rows": [21], "cols": [14, 15], "aggregation": "max_over_cells", "native_unit": "raw_uint8_counts", "state": "available", "evidence_class": "B", "evidence": "cued pad press 2026-09-17: 4 trials"},
+    {"region_id": "glove.left.ring.pad.r22", "group": "glove.left.ring", "anatomy": "ring", "role": "touch", "rows": [22], "cols": [14, 15], "aggregation": "max_over_cells", "native_unit": "raw_uint8_counts", "state": "available", "evidence_class": "B", "evidence": "cued pad press 2026-09-17: 4 trials"},
+    {"region_id": "glove.left.pinky.pad.r20", "group": "glove.left.pinky", "anatomy": "pinky", "role": "touch", "rows": [20], "cols": [16], "aggregation": "max_over_cells", "native_unit": "raw_uint8_counts", "state": "available", "evidence_class": "B", "evidence": "cued pad press 2026-09-17: 3 trials, +14..+116 counts; one column responded on this row"},
+    {"region_id": "glove.left.pinky.pad.r21", "group": "glove.left.pinky", "anatomy": "pinky", "role": "touch", "rows": [21], "cols": [16, 17, 18], "aggregation": "max_over_cells", "native_unit": "raw_uint8_counts", "state": "available", "evidence_class": "B", "evidence": "cued pad press 2026-09-17: 3 trials"},
+    {"region_id": "glove.left.pinky.pad.r22", "group": "glove.left.pinky", "anatomy": "pinky", "role": "touch", "rows": [22], "cols": [16, 17, 18, 19], "aggregation": "max_over_cells", "native_unit": "raw_uint8_counts", "state": "available", "evidence_class": "B", "evidence": "cued pad press 2026-09-17: 3 trials"},
+    {"region_id": "glove.left.index.bend.r19", "group": "glove.left.index", "anatomy": "index", "role": "bend", "rows": [19], "cols": [4, 5, 6, 7], "aggregation": "max_over_cells", "native_unit": "raw_uint8_counts", "state": "available_role_bend", "evidence_class": "B", "evidence": "the station's bend probe measured +56 counts on these cells under a bend command; this audit's declared sustained rule finds this block firing on 3 of 13 bend-control trials and 0 of 17 rest trials, so the role is supported by two independent readings at unequal strength", "excluded_from_contact": true},
+    {"region_id": "glove.left.palm.unverified", "group": "glove.left.palm", "anatomy": "palm", "role": "unknown", "rows": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16], "cols": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19], "aggregation": null, "native_unit": "raw_uint8_counts", "state": "readable_identity_vendor_only", "evidence_class": "A", "evidence": "vendor figure places the palm here; first-party palm press probes produced no response above the declared threshold on any of these 340 bytes", "excluded_from_contact": true}
+  ],
+  "unmapped_policy": {
+    "rule": "every one of the 460 pressure cells that no region above covers stays class C (bytes readable, identity unknown), or D when unreadable. No cell is filled in by interpolation, by mirroring an assumption, or by a plausible-looking default, and no cell is assigned a zero position to stand for 'unknown'.",
+    "blocks": [
+      {"rows": [17, 18], "cols": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19], "reason": "distal finger rows: the vendor figure places fingers here, but no first-party press produced a response in rows 17-18"},
+      {"rows": [19], "cols": [0, 1, 2, 3, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19], "reason": "row 19 outside the index bend block"},
+      {"rows": [20, 21, 22], "cols": [12, 13], "reason": "columns 12-13 of the pad rows: the vendor ring block includes them, no first-party site maps them"},
+      {"rows": [20], "cols": [17, 18, 19], "reason": "pinky pad row 20 beyond the single column that responded"},
+      {"rows": [21], "cols": [19], "reason": "pinky pad row 21: the probe localised three of the vendor block's four columns"}
+    ],
+    "coverage_rule": "the layout report computes the coverage by enumerating all 460 indices; it is the authoritative count and the CLI's validate command fails on any index left in no category",
+    "unknown_regions_are_not_contact": true
+  },
+  "first_party_evidence": {
+    "probe_rounds": {
+      "path": "outputs/capture-station/probe",
+      "files": "trials.jsonl plus trial-*.npz (raw frames, 548 bytes each) and baseline-*.npz (per-byte rest median)",
+      "when": "2026-09-17/18/19",
+      "audit_reproduction": "scripts/glove_tactile_bridge.py audit-regions, 2026-10-06; every trial file is hashed in the report it writes",
+      "method": "the trial's own per-cell median is the rest baseline; a region is responding only if its per-frame maximum stays at or above the declared threshold for at least 3 consecutive frames; the responding finger block with the largest value at that run is the attribution",
+      "results": "20 of 21 pad presses attributed to the operator-named finger (the single exception is the trial whose label the station's own test records as operator-corrected), 0 of 17 rest trials showing any finger response, 0 of 7 palm presses showing a finger response, and 20 of 28 tip presses attributed (tips are reported as measured, not claimed)",
+      "not_a_calibration": "this establishes region identity and an ordering, never a force, a pressure or a metric position"
+    },
+    "palm_press": {
+      "trials": 7,
+      "result": "the 340-cell palm block fires on 5 of 7 palm presses, on 38 of 49 finger presses and on 0 of 17 rest trials, so it is a contact-exists indicator and not a palm indicator",
+      "consequence": "the palm stays candidate_unverified and is excluded from contact scoring"
+    },
+    "tip_press": {
+      "trials": 28,
+      "result": "20 of 28 tip presses are attributed to the finger the operator named, and the finger blocks do not distinguish a tip press from a pad press",
+      "consequence": "the layout's granularity is per finger per pad row; no tip/pad separation is claimed"
+    },
+    "recorded_baseline_staleness": {
+      "trials": 93,
+      "stale": 3,
+      "median_absolute_offset_raw_counts": 0.0,
+      "consequence": "the recorded rest baselines are usable overall but not per trial, so a consumer must use the stream's own rest statistics for a region-level threshold and record which baseline it used"
+    },
+    "cross_reference": {
+      "file": "code/capture_station/station_config.json",
+      "fields": ["contact_byte_offsets", "contact_sites", "contact_channel_map"],
+      "agreement": "the byte groups localised there are the 50 touch cells plus the 4 index-bend cells of this layout; this layout was derived from the same raw probe trials and the two agree on which finger each group belongs to on a left hand",
+      "disagreement": "that file records 'finger TIP presses produced almost no response on any byte'; this audit measures 20 of 28 tip presses attributed to the named finger, so the statement is not supported by the bytes and is recorded as a disagreement rather than adopted",
+      "note": "the station config is the live station UI's own view and is not modified by this layout; the station keeps owning its own copy"
+    }
+  },
+  "calibration": {
+    "calibration_id": "UNKNOWN",
+    "reason": "no first-party calibration record id exists for this unit; the vendor exposes only a factory-calibration status flag and documents no id and no data format",
+    "baseline": {
+      "kind": "per-cell rest median",
+      "availability": "present in a recorded session when the station captured one, otherwise a consumer must compute its own from the session's declared baseline window and say so in its output"
+    }
+  },
+  "unknowns": [
+    "wire-protocol version string and whether the wire format changed across SDK versions",
+    "per-taxel metric position, taxel pitch and grid origin",
+    "pressure unit, calibration curve and zero reference",
+    "acquisition-side drop model",
+    "latency, jitter and cross-stream synchronisation",
+    "identity of rows 17-18 and of columns 12-13",
+    "whether any palm cell can ever respond",
+    "whether this physical unit's firmware matches the documented wire format (the PDF and SDK are documentation, not a device readback)"
+  ],
+  "not_claimed": [
+    "that a raw count is a pressure or a force",
+    "that any region's position in space is known",
+    "that the 460-cell grid is physically a regular 23x20 sensor array: the wire field is a 23x20 byte grid and the vendor figure assigns regions to it, but whether the physical sensors form a regular 23x20 array is not established",
+    "that this layout is a glove model: it carries no mesh, no joint limits and no kinematics"
+  ]
+}

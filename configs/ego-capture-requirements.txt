@@ -1,0 +1,7 @@
+numpy==1.26.4
+av==15.1.0
+opencv-contrib-python==4.11.0.86
+pyserial==3.5
+mediapipe==0.10.21
+scipy==1.13.1
+pillow==11.3.0

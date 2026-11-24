@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+capture.local.json
+recordings/
+outputs/
+runtime/

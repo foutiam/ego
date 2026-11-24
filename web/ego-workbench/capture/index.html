@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ego · 双目与手套采集</title><link rel="stylesheet" href="./style.css?v=calib-layout-2"></head>
+<body>
+<nav id="standaloneLinks" class="capture-tools release-links" aria-label="工作台" hidden>
+  <a href="/ego-capture/" aria-current="page">采集与处理</a>
+  <a href="/workflow/">物理交互工作流</a>
+</nav>
+<nav class="capture-tools" aria-label="采集工具">
+  <div class="capture-tabs" role="tablist" aria-label="采集分栏">
+    <button type="button" id="tabCalib" class="tab" data-tab="calib" role="tab" aria-controls="calib" aria-selected="false" tabindex="-1"><span aria-hidden="true">00</span>标定与同步</button>
+    <button type="button" id="tabDirectory" class="tab active" data-tab="directory" role="tab" aria-controls="directory" aria-selected="true"><span aria-hidden="true">01</span>录制目录</button>
+    <button type="button" id="tabReview" class="tab" data-tab="review" role="tab" aria-controls="review" aria-selected="false" tabindex="-1"><span aria-hidden="true">02</span>选段与标注</button>
+  </div>
+  <span id="modeTag" class="tag">实时模式</span>
+</nav>
+<main>
+<aside id="jobPanel" class="job-panel hidden"><span class="spinner"></span>
+<div><strong id="jobTitle"></strong><p id="jobText"></p></div></aside>
+<div id="notice" role="status" aria-live="polite">连接双目相机和左手手套后，画面会自动出现。</div>
+<div id="originBanner" role="alert" class="hidden"></div>
+
+<section id="directory" class="page active" role="tabpanel" aria-labelledby="tabDirectory">
+<div class="section-heading" id="directoryHeading"><div><h2>录制目录</h2></div>
+<div class="toolbar directory-actions">
+<button type="button" id="refreshSessions" class="small">刷新</button>
+<button type="button" id="captureLive" class="small primary" aria-expanded="false" aria-controls="live">实时录制</button>
+</div></div>
+<article id="importPanel" class="card directory-import">
+<div class="card-title"><h3>自动导入录制</h3></div>
+<p class="muted">把完整 Ego 会话文件夹放入 <code id="captureInboxPath">E:\diss\data\ego\imports</code>，复制完成后自动导入并整理。ZIP 请先解压。</p>
+<p id="captureImportStatus" class="muted" role="status"></p></article>
+
+<section id="live" class="page" aria-labelledby="liveTitle" hidden>
+<div class="section-heading"><div><h3 id="liveTitle" tabindex="-1">实时录制</h3><p>查看双目和左手手套，保存后会自动开始整理。</p></div><button type="button" id="liveBackToDirectory" class="small">返回录制目录</button></div>
+<div class="status-strip">
+<div><i id="cameraDot"></i><span>双目相机（串口）</span><strong id="cameraStatus">检查连接…</strong></div>
+<div><i id="gloveDot"></i><span>左手手套（串口）</span><strong id="gloveStatus">检查连接…</strong></div>
+<div><i id="poseDot"></i><span>手部姿态</span><strong id="poseStatus">模型启动中…</strong></div>
+</div>
+<div class="live-acquisition">
+<aside class="live-controls" aria-label="录制与二维码">
+<article class="card record-card">
+<div class="card-title"><h2>录制设置</h2><span id="recordTimer" class="record-timer">未录制</span></div>
+<div class="form-grid">
+<label>物体编号<input id="objectId" maxlength="64" placeholder="例如 bottle_01"></label>
+<label>场景编号<input id="sceneId" value="scene_001" maxlength="64"></label>
+<label>材质<select id="material"><option value="unknown" selected>未确认</option><option value="foam">泡沫</option><option value="transparent">透明</option><option value="opaque">不透明参照</option><option value="other">其他</option></select></label>
+<label>数据划分<select id="split"><option value="train">训练集</option><option value="val">验证集 · 另一物体</option><option value="test">测试集 · 再一个物体</option></select></label>
+</div>
+<p class="muted">相机和手套就绪后可录制。同一物体使用同一数据划分。</p>
+<div class="record-buttons"><button id="startRecord" class="primary">● 开始录制</button>
+<button id="startUnlimitedRecord" type="button" title="跳过录制时长、大小和磁盘剩余空间检查">● 不限额录制</button>
+<button id="stopRecord" disabled>■ 停止并保存</button></div>
+<div class="markers"><button id="contactMarker" class="small quiet">标记接触</button>
+<button id="releaseMarker" class="small quiet">标记松开</button>
+<span>标记供复查定位</span></div>
+<div id="recordingInfo" class="muted" role="status"></div>
+</article>
+<article class="card live-qr">
+<div class="card-title"><h2>同步二维码</h2><div class="qr-actions">
+<button id="toggleLiveQr" type="button" class="small" aria-controls="liveQrBody" aria-expanded="true">收起</button>
+<button id="enlargeLiveQr" type="button" class="small quiet" disabled>放大</button>
+</div></div>
+<div id="liveQrBody" class="qr-display-slot">
+<div id="liveQrDisplay" class="qr-clock-display">
+<div id="liveQrCode" class="qr-canvas" aria-label="采集电脑时钟二维码" hidden></div>
+<p id="liveQrStatus" class="muted" role="status">未录制，二维码已暂停</p>
+</div></div>
+<dialog id="liveQrDialog" class="qr-dialog" aria-labelledby="liveQrDialogTitle">
+<div class="card-title"><h2 id="liveQrDialogTitle">同步二维码</h2>
+<form method="dialog"><button type="submit" class="small">关闭放大</button></form></div>
+<div id="liveQrDialogBody" class="qr-display-slot"></div>
+</dialog>
+</article>
+</aside>
+<article class="card cameras">
+<div class="card-title">
+  <h2>双目预览</h2>
+  <div class="camera-actions">
+    <span id="previewStale" class="tag hidden">预览数据过期</span>
+    <button id="replay" class="small quiet">历史回放</button>
+    <button id="liveMode" class="small quiet">返回实时</button>
+  </div>
+</div>
+<div class="camera-grid">
+<figure><div class="feed"><img id="cam0" alt="相机 0 实时画面"><div id="empty0" class="empty">连接相机后显示<br><small>请让整只左手进入画面</small></div></div>
+<figcaption><span>CAM 0</span><span id="resolution0">—</span></figcaption></figure>
+<figure><div class="feed"><img id="cam1" alt="相机 1 实时画面"><div id="empty1" class="empty">连接相机后显示<br><small>两个镜头都应看见手和物体</small></div></div>
+<figcaption><span>CAM 1</span><span id="resolution1">—</span></figcaption></figure>
+</div>
+<section class="live-hand pose-card"><div class="card-title"><h2>实时手套骨架与触觉</h2><div class="status-tags"><span id="emfPoseTag" class="tag soft">—</span><span id="retargetStatus" class="tag">等待 SDK</span></div></div><div class="hand-controls"><label class="number-label"><input type="checkbox" id="handTactileToggle" checked> EMF 图层</label><label class="number-label"><input type="checkbox" id="handPressureToggle" checked> 触觉点</label><span id="handFrameTag" class="tag soft">wrist_local</span></div><div id="handCamBanner" class="hand-banner hidden"></div><div class="hand-view"><div class="hand-stage"><canvas id="handSkeletonCanvas" width="920" height="1080" aria-label="25 点手部骨骼三维可视化"></canvas></div><div class="hand-side"><div class="hand-legend" id="handLegend"></div><div class="hand-readout" id="handReadout">等待 25 点骨骼数据。</div><p class="hand-hint">拖拽旋转 · 滚轮缩放 · 双击复位。压感图层显示原始计数，绘制圆垫需要静置基线。</p>
+<details class="compact-details"><summary>触觉图层说明</summary><p class="hand-hint">骨架是手套 SDK 输出的腕部局部姿态。EMF 图层显示各指响应，触觉点按原始压感计数显示强弱。点位按传感器分区近似铺在手上。采集静置基线后可显示相对基线的变化。</p></details></div></div><div id="emfPoseGrid" class="pose-grid"><span class="muted">等待有效手套帧。</span></div><p id="skeletonStatus" class="muted">25 点骨骼：等待 SDK。</p><details class="compact-details"><summary>24 个关节角与 25 点坐标（数值）</summary><div id="jointCommandGrid" class="joint-grid"><span class="muted">等待官方关节角输出。</span></div></details></section>
+<details class="link-diagnostics">
+  <summary><strong>设备诊断与链路统计</strong><span id="modeBadge" class="tag soft">实时</span></summary>
+  <dl class="link-stats" id="linkStats">
+    <div><dt>相机帧</dt><dd id="camFrames">0</dd></div>
+    <div><dt>相机无效／残帧</dt><dd id="camBad">0</dd></div>
+    <div><dt>相机速率</dt><dd id="camRate">— Hz</dd></div>
+    <div><dt>相机字节</dt><dd id="camBytes">0</dd></div>
+    <div><dt>手套帧</dt><dd id="gloveFrames">0</dd></div>
+    <div><dt>手套无效／残帧</dt><dd id="gloveBad">0</dd></div>
+    <div><dt>手套速率</dt><dd id="gloveRate">— Hz</dd></div>
+    <div><dt>手套字节</dt><dd id="gloveBytes">0</dd></div>
+    <div><dt>本次录制 · 相机</dt><dd id="sessCam">—</dd></div>
+    <div><dt>本次录制 · 手套</dt><dd id="sessGlove">—</dd></div>
+    <div><dt>磁盘剩余</dt><dd id="diskFree">—</dd></div>
+  </dl>
+  <p class="muted">帧、速率和字节从设备连接起算。本次录制的增量随会话保存。</p>
+  <p class="muted" id="clockStatus">相机校时：未发送。视触时间对应仍未验证。</p>
+  <div id="deviceReport" class="muted"></div>
+  <p class="muted">串口双路 HEVC 采用 COBS 与 protobuf 协议。</p>
+</details>
+
+</article>
+</div>
+<div class="bottom-grid">
+<article class="card">
+<div class="card-title"><h2>实时触觉监测</h2><span id="touchStale" class="tag hidden">触觉数据过期</span><span id="touchBadge" class="tag">等待数据</span></div>
+<p class="chart-label">最近的触觉响应 · 原始计数</p><canvas id="touchCanvas" width="900" height="160" aria-label="触觉原始响应随时间变化"></canvas>
+<div class="raw-tactile-grid"><div><p class="chart-label">23 × 20 原始压感网格</p><canvas id="pressureCanvas" width="460" height="300" aria-label="23乘20压感原始网格"></canvas>
+</div><div><p class="chart-label">手套原始传感器值</p><canvas id="sensorCanvas" width="360" height="110" aria-label="手套传感器原始值"></canvas></div></div>
+<div class="touch-controls"><button id="baseline">采集静置基线 · 3 秒</button>
+<span id="touchValue" class="muted">原始相对值，尚未换算为压力</span><span id="pressureValue" class="muted">压感网格等待数据</span></div>
+<p id="sensorSummary" class="muted">等待手套触觉通道数据…</p>
+<details><summary>数据含义与局限</summary><p>界面显示配置选定的字节通道原始值（按 2026-09-17 探针证据分组到各手指位点；位点分组尚未由操作员显式确认）。基线为相对响应，不是压力标定。「采集静置基线 · 3 秒」同时保存接触字节的逐字节中位数与 23×20 压感网格的逐格中位数（后者是触觉点图层的静置零点；缺失时该图层不画接触圆垫）。原始计数无单位、无标定曲线，两者都不是压力。手套厂牌/型号/IMU 未确认（VID 0483 / PID 5739 仅为通用 STM32 串口设备）。</p></details>
+</article>
+<article class="card guided-card" id="guidedCapture" aria-label="单次时间轴分项采集">
+<div class="card-title"><h2>单次时间轴 · 分项采集</h2><span id="guidedProgress" class="tag">准备中</span></div>
+<label class="guided-source">分项时间轴<select id="guidedSource"><option value="">新建时间轴</option></select></label>
+<p id="guidedObjectHint" class="muted">一条时间轴使用同一个交互物体，可连续采集多段操作并为每段填写标签。</p>
+<div id="guidedGroups" class="guided-groups" role="group" aria-label="采集分组"></div>
+<div id="guidedStatus" class="guided-status" role="status" aria-live="polite">正在读取采集任务…</div>
+<div id="guidedRows" class="guided-rows"></div>
+<div class="toolbar guided-actions"><button id="guidedFinish" class="primary" disabled>■ 保存整条时间轴</button><button id="guidedNew" class="small" disabled>新建下一条时间轴</button><button id="guidedUndo" class="small hidden">撤销移除</button></div>
+<div id="guidedSelected" class="muted" role="status"></div>
+<button id="guidedReview" type="button" class="small" disabled>复查所选片段</button>
+<div id="guidedTimeline" class="guided-timeline" aria-label="已录制任务片段"></div>
+<p id="guidedSession" class="muted"></p>
+<details><summary>分项采集说明</summary><p class="muted">分项之间仍持续录制。选择一种类型并填写标签，开始与结束只标记本段时间；采集完多段后再保存整条时间轴。</p><p class="muted">参考分段按需要录，主要时间用于采集实际操作。成功和失败都可以保留为独立分段。</p></details>
+</article>
+</div>
+</section>
+
+
+<article class="card directory-list" id="directoryList"><div class="card-title"><h3>录制会话</h3><span id="sessionCount" class="tag">0 条</span></div>
+<div id="sessionTable" class="session-list"></div>
+<select id="sessionSelect" hidden aria-label="当前录制"></select></article>
+<section id="quality" class="page card directory-quality" aria-labelledby="qualityTitle" hidden>
+<div class="section-heading session-heading"><div><h3 id="qualityTitle" tabindex="-1">整理与标定</h3><p id="qualityRecording"></p></div>
+<button id="closeQuality" type="button" class="small">收起整理详情</button></div>
+<div id="qualityContent" hidden>
+<article class="card qc-processing">
+<div class="card-title"><h3>录制整理</h3><span id="qcStatus" class="tag" role="status">待整理</span></div>
+<p class="muted">录制保存或导入后会自动排队。整理会配对双目帧、读取手套时间轴，并生成 02 使用的复查画面。</p>
+<div id="qcMetrics" class="qc-metrics" hidden>
+<div><span>双目配对</span><strong id="qcStereoCount">—</strong></div>
+<div><span>有效手套帧</span><strong id="qcGloveCount">—</strong></div>
+<div><span>接触候选区间</span><strong id="qcContactCount">—</strong></div></div>
+<p id="qcJobMessage" class="qc-message muted" role="status"></p>
+<div class="toolbar"><button type="button" id="process" class="small">开始整理</button><button type="button" id="qualityOpenReview" class="small primary">去 02 选段与标注</button></div>
+</article>
+<div class="qc-calibration-grid">
+<article class="card">
+<div class="card-title"><h3>本次录制使用的标定</h3></div>
+<p class="muted">整理使用保存录制时记录的参数和触觉基线。设备的重新标定入口在 00。</p>
+<dl id="qcOriginalSetup" class="qc-facts"></dl>
+<div class="toolbar"><button type="button" id="openDeviceCalibration" class="small">去 00 标定设备</button></div>
+</article>
+<article class="card">
+<div class="card-title"><h3>对照其他录制的标定</h3></div>
+<p class="muted">选一条历史录制查看参数记录和验证状态，仅用于对照。</p>
+<label>对照录制<select id="reviewSetup"></select></label>
+<p id="reviewSetupStatus" class="muted" role="status"></p>
+</article></div>
+<article class="card">
+<div class="card-title"><h3>同步检查</h3></div>
+<dl id="qcSyncFacts" class="qc-facts"></dl>
+<p class="muted">双目按相机时间配对，手套按主机接收时间关联。物理同步需要在 00 用带同步动作的录制单独检查。</p>
+<details class="compact-details"><summary>查看完整整理报告</summary><pre id="qualitySummary" class="muted"></pre></details>
+</article></div>
+</section>
+</section>
+<section id="review" class="page" role="tabpanel" aria-labelledby="tabReview" hidden>
+<div class="section-heading session-heading">
+<div><h2>选段与标注</h2><p id="sessionSummary" class="review-session-summary muted" role="status">选择录制后可以复查双目、触觉和事件。</p></div>
+<label>录制会话<select id="reviewSession"></select></label></div>
+<p id="reviewEmpty" class="card muted">从上方选择一条录制。</p>
+<div id="reviewContent" hidden>
+<div class="review-layout">
+<article class="card review-player" aria-labelledby="reviewPlayerTitle">
+<div class="card-title"><h3 id="reviewPlayerTitle">双目回放</h3><span id="reviewTime" class="tag">—</span></div>
+<div class="camera-grid review-cameras">
+<figure><div class="feed"><img id="reviewImage0" class="review-image" alt="复查相机 0"><span class="empty">暂无 CAM 0 画面</span></div><figcaption>CAM 0</figcaption></figure>
+<figure><div class="feed"><img id="reviewImage1" class="review-image" alt="复查相机 1"><span class="empty">暂无 CAM 1 画面</span></div><figcaption>CAM 1</figcaption></figure>
+</div>
+<div class="review-timeline">
+<input id="reviewSlider" type="range" min="0" max="0" step="1" value="0" aria-label="定位双目回放帧">
+<div class="review-timeline-times"><span id="reviewTimelineStart">—</span><span id="reviewTimelineEnd">—</span></div>
+</div>
+<div class="toolbar review-playback">
+<button id="reviewPlay" type="button" class="small primary" disabled>播放</button>
+<button id="reviewPrevious" type="button" class="small" disabled>上一帧</button>
+<button id="reviewNext" type="button" class="small" disabled>下一帧</button>
+<label class="review-speed">倍速<select id="reviewSpeed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></label>
+<label class="check"><input id="reviewLoop" type="checkbox">循环</label>
+<span id="reviewFrameTag" class="muted">0 / 0 帧</span></div>
+<p id="reviewPlaybackNote" class="muted" role="status"></p>
+<button id="reviewOpenQuality" type="button" class="small" hidden>查看本次录制的整理详情</button>
+</article>
+<aside class="review-side">
+<article class="card review-range-card">
+<div class="card-title"><h3>复查范围</h3></div>
+<label>录制分段<select id="reviewSegment"><option value="">整条会话</option></select></label>
+<p id="reviewRangeStats" class="muted" role="status">整条会话</p>
+<div class="toolbar">
+<button id="reviewOpenEvents" type="button" class="small primary" aria-controls="reviewAnnotations" aria-expanded="false">展开事件标注</button>
+<button id="reviewOpenWorkflow" type="button" class="small" hidden>在工作流查看</button>
+</div>
+</article>
+<details class="card review-events" id="reviewAnnotations">
+<summary>事件标注 <span id="reviewAnnotationScope" class="muted">整条会话</span></summary>
+<form id="manualEventForm" class="manual-event-form" hidden>
+<div class="card-title"><h4>在当前帧补标</h4><span id="manualEventTime" class="tag">—</span></div>
+<label>事件标签<input id="manualEventLabel" required maxlength="80" placeholder="例如 首次接触"></label>
+<label>备注（可选）<input id="manualEventNote" maxlength="500"></label>
+<div class="toolbar"><button id="manualEventSave" class="small primary" type="submit">保存标注</button><button id="manualEventCancel" class="small" type="button" hidden>取消编辑</button></div>
+</form>
+<p id="manualEventStatus" class="muted" role="status"></p>
+<div id="manualEventList" class="manual-event-list"></div>
+<div class="recorded-tactile-layout">
+<div id="eventReview" class="muted">展开后读取所选区间的触觉事件。</div>
+<div class="recorded-pressure"><strong>手套原始压感</strong>
+<canvas id="recordedPressure" width="220" height="253" aria-label="当前回放时间的手套原始触觉矩阵"></canvas>
+<p id="recordedPressureTime" class="muted">定位到某一时刻后显示。</p>
+<div class="recorded-hand">
+<strong>手套骨架 · 腕部局部</strong>
+<div class="hand-layer-options">
+<label class="check"><input id="recordedTaxelToggle" type="checkbox" checked>触觉点</label>
+<label class="check"><input id="recordedEmfToggle" type="checkbox" checked>EMF 图层</label>
+</div>
+<canvas id="recordedHandCanvas" width="320" height="300" aria-label="当前回放时间的原始手套骨架和触觉图层"></canvas>
+<p id="recordedHandStatus" class="muted" role="status">定位到某一时刻后显示。</p>
+</div></div></div>
+<details class="review-policy compact-details" id="reviewPolicy">
+<summary>工作流 04 候选标注</summary>
+<div class="toolbar"><button type="button" id="refreshPolicyLabels" class="small" disabled>刷新候选</button></div>
+<p id="policyLabelStatus" class="muted" role="status">选择已加入工作流的片段后查看。</p>
+<div id="policyLabels" class="policy-labels"></div></details>
+</details>
+<details class="card review-range-editor" id="reviewPublish">
+<summary>自选区间与送入工作流</summary>
+<div class="toolbar">
+<button id="reviewMarkStart" type="button" class="small">设当前时间为起点</button>
+<button id="reviewMarkEnd" type="button" class="small">设当前时间为终点</button>
+</div>
+<div class="form-grid">
+<label>开始（秒）<input id="workflowSegmentStart" type="number" min="0" step="0.000001"></label>
+<label>结束（秒）<input id="workflowSegmentEnd" type="number" min="0" step="0.000001"></label>
+<label>片段名<input id="workflowSegmentName" maxlength="96" placeholder="例如 normal-1"></label>
+<label>类别<select id="workflowSegmentCategory"><option value="normal">正常操作</option><option value="miss">抓取失败</option><option value="adjust">调整操作</option><option value="abort">中止操作</option><option value="reference">标定／参考</option></select></label>
+</div>
+<div class="toolbar"><button id="reviewPreviewRange" type="button" class="small">应用选区</button><button id="workflowSegmentPublish" type="button" class="small">加入工作流</button></div>
+<p id="workflowSegmentStatus" class="muted" role="status"></p>
+</details>
+<details class="card compact-details"><summary>录制文件</summary>
+<div class="toolbar"><button id="exportBtn" type="button" class="small">导出 ZIP</button><button id="deleteSession" type="button" class="small quiet danger">删除所选录制</button></div>
+<div id="loaderResult" class="loader-result"></div></details>
+</aside></div>
+</div>
+</section>
+<section id="calib" class="page" role="tabpanel" aria-labelledby="tabCalib" hidden>
+<div class="section-heading calib-heading"><h2>标定与同步</h2>
+<button id="calibOpenLive" type="button" class="small">转到实时录制</button></div>
+<nav class="calib-nav" aria-label="标定工具">
+<button type="button" data-calib-view="calibDevices" aria-controls="calibDevices" aria-pressed="true">当前设备标定</button>
+<button type="button" data-calib-view="calibClocks" aria-controls="calibClocks" aria-pressed="false">二维码对时</button>
+<button type="button" data-calib-view="calibAdvanced" aria-controls="calibAdvanced" aria-pressed="false">高级工具</button>
+</nav>
+
+<div id="calibRecordingTools" class="calib-recording" hidden>
+<label>录制会话<select id="calibSyncSession"></select></label>
+<button id="calibOpenSnapshot" type="button" class="small" disabled>查看录制快照</button>
+</div>
+<div id="calibDevices" class="calib-pane">
+<div class="calib-actions-grid">
+<article class="card calib-task">
+<div class="card-title"><h3>左右目确认</h3><button id="refreshCalib" type="button" class="small quiet">刷新设备</button></div>
+<p class="muted">遮住一只镜头，观察哪一路变暗，再指定物理左右目。</p>
+<div id="eyeCheckRows" class="calib-eye-fields" role="status">正在读取相机…</div>
+<div class="toolbar"><button id="submitEyeCheck" class="primary">保存左右目</button></div>
+</article>
+<article class="card calib-task qnbot-calibration-card">
+<div class="card-title"><h3>左手手套</h3></div>
+<div class="toolbar"><button id="calibTouchBaseline" type="button" class="small">采集静置基线 · 3 秒</button></div>
+<p class="muted" id="calibBaselineStatus"></p>
+<div id="qnbotCalibrationState" class="muted" role="status">正在读取 OpenXR 标定…</div>
+<div class="toolbar"><button id="startQnBotCalibration" class="primary">重新标定 OpenXR</button><button id="reuseQnBotCalibration" class="small">使用上次标定</button><button id="captureQnBotCalibration" class="small" disabled>采集当前姿势</button><button id="cancelQnBotCalibration" class="small" disabled>取消</button></div>
+</article>
+</div>
+<details class="card calib-diagnostics"><summary>设备参数与校验状态</summary>
+<div id="calibPanels" class="calib-grid"></div>
+<details><summary>完整校验条件</summary><div id="calibWizard" class="muted"></div>
+<ul id="calibUnverified" class="muted"></ul></details></details>
+</div>
+
+<div id="calibClocks" class="calib-pane" hidden>
+<div class="calib-actions-grid">
+<article class="card calib-task">
+<div class="card-title"><h3>拍摄时间码</h3></div>
+<ol class="calib-checklist">
+<li>启动手套、Ego 和 Exo 录制。</li>
+<li>开头和结尾各拍同一个屏幕 5–10 秒，两段间隔至少 10 秒。保持页面开启。</li>
+<li>保存并整理 Ego 录制，再计算时间映射。</li>
+</ol>
+<div class="toolbar">
+<button id="calibShowLiveQr" type="button" class="small primary">在实时录制显示</button>
+<a class="tool-link" href="./qr-timecode.html" target="_blank" rel="noopener">打开独立二维码</a>
+</div>
+</article>
+<article class="card calib-task">
+<div class="card-title"><h3>录制对齐</h3></div>
+<label for="qrVideos">Exo 原始视频（可选）</label>
+<div class="calib-video-source">
+<select id="qrVideos" size="3" multiple aria-describedby="qrVideoFolder"></select>
+<button type="button" class="small quiet" id="refreshQrVideos">刷新视频</button>
+</div>
+<details class="calib-input-guide" id="qrVideoFolder"><summary>导入 MP4／MOV</summary><p>将文件放入 <code id="qrVideoDirectory"></code>，再刷新视频列表。</p></details>
+<div class="toolbar">
+<button type="button" class="small primary" id="runQrSync">计算时间映射</button>
+<button type="button" class="small" id="readQrReport">查看已有结果</button>
+<a id="qrReport" download="qr-sync.json" class="tool-link" hidden>下载 JSON</a>
+</div>
+<p id="qrResult" class="muted" role="status"></p>
+<div class="calib-latency">
+<button id="runSyncCheck" type="button" class="small quiet">检查视触延迟</button>
+<details class="calib-input-guide"><summary>怎么拍敲击测试</summary><p>仅首次验收、换设备或同步异常时，用戴手套的手在镜头前敲击，录制开头、中段和结尾各做一次。</p></details>
+<p id="syncResult" class="muted" role="status"></p>
+</div>
+</article>
+</div>
+<article id="exoSetup" class="card calib-task">
+<div class="card-title"><h3>固定 EXO 相机</h3></div>
+<p class="muted">先选择已整理的录制。将原始录像和标定录像复制到 <code id="exoVideoDirectory"></code>；已有内参 JSON 放入 <code id="exoProfileDirectory"></code>。</p>
+<div class="toolbar">
+<a class="tool-link" href="./api/exo/board.png" download="ego-charuco-8x5-25mm.png">下载标定板</a>
+<label>实测格长（mm）<input id="exoSquareMm" type="number" value="25" min="15" max="40" step="0.01"></label>
+<button id="addExo" type="button" class="small">添加 EXO</button>
+<button id="refreshExo" type="button" class="small quiet">刷新文件</button>
+</div>
+<div id="exoRows" class="calib-actions-grid"></div>
+<div class="toolbar">
+<button id="processExo" type="button" class="small primary" disabled>计算 EXO 标定与对齐</button>
+<button id="readExoReport" type="button" class="small">查看结果</button>
+<a id="exoReport" class="tool-link" download="exo-session.json" hidden>下载处理记录</a>
+</div>
+<p id="exoStatus" role="status" class="muted"></p>
+</article>
+</div>
+
+<div id="calibAdvanced" class="calib-pane" hidden>
+<article class="card calib-task"><div class="card-title"><h3>手与相机空间标定</h3></div>
+<details class="compact-details"><summary>AprilTag 坐标约定</summary>
+<p>腕部为原点，单位为米。+x 朝手背，+y 朝拇指，+z 朝手指。验证精度需要独立留出点。</p></details>
+<div id="markerLayoutRows" class="muted">正在读取标记…</div>
+<div class="toolbar"><button id="addMarkerRow" class="small">添加标记</button>
+<button id="saveMarkerLayout" class="small">保存位置</button>
+<button id="runMarkerCalibration" class="primary">用实时画面标定</button>
+<button id="useSessionFrame" class="small">用录制帧标定</button></div>
+<div id="markerCalibResult" class="loader-result"></div>
+<p class="muted small-text" id="markerLayoutNote"></p></article>
+<details id="probe" class="card compact-details"><summary>手套标定、触觉映射与实时诊断</summary>
+<div class="section-heading"><div><h2>触觉信号</h2><p>实时查看并采集原始触觉响应。手势状态仅作为可复现输入记录，不自动解释为压力或关节角。</p></div><span id="probeVersionTag" class="tag">映射版本 —</span></div>
+<div class="probe-action-grid">
+<article class="card"><div class="card-title"><h2>触觉状态采集</h2><span id="probeBaselineTag" class="tag">基线未采集</span></div><div id="probeStatuses" class="muted"></div><div class="toolbar"><label>按压位置<select id="probePos"></select></label><button id="probeBaseline" class="primary">静置基线 3 秒</button><button id="probePress" class="small">按压 4 秒</button><button id="probeBend" class="small">弯曲对照 4 秒</button><button id="probeRest" class="small">静置对照 4 秒</button></div><div class="toolbar"><button id="probeRelaxed" class="small">正常放松手掌静置 4 秒</button><button id="probeFist" class="small">手掌握拳 4 秒</button><button id="probeTogether" class="small">五指并拢 4 秒</button><button id="probeRefresh" class="small quiet">刷新结果</button></div><div id="probeTrialInfo" class="muted">先采集基线，再采集手势或按压状态。</div><div class="probe-plots"><div><p class="chart-label">试验时序</p><canvas id="probeTrialCanvas" width="640" height="170"></canvas></div><div><p class="chart-label">各通道响应</p><canvas id="probeTrialBars" width="640" height="120"></canvas></div></div><div id="probeCandidates"></div><div id="probeDiscovery"></div></article>
+<article class="card"><div class="card-title"><h2>一键采集 24 步状态序列</h2><span id="probeSeqTag" class="tag">未运行</span></div><div id="probeSeqStatus" class="muted">包含放松、握拳、五指并拢、弯曲、按压和对照。</div><div class="toolbar"><button id="probeSeqStart" class="primary">开始序列</button><button id="probeSeqStop" class="small" disabled>停止</button></div><div id="probeSeqResults" class="muted">尚无完成步骤。</div></article>
+</div>
+<details class="compact-details"><summary>高级：运动标定、映射标签与解码审计</summary><article class="card"><div class="card-title"><h2>运动传感组标定</h2><span id="mcalTag" class="tag">未运行</span></div><div id="mcalStatus" class="muted">尚未运行。</div><div class="toolbar"><button id="mcalStart" class="small">开始运动标定</button><button id="mcalStop" class="small" disabled>停止</button></div><div id="mcalResults" class="muted"></div><div id="mcalResult" class="muted"></div></article><article class="card"><h2>映射标签（操作员确认）</h2><div class="probe-labels" id="probeLabels"></div><div class="toolbar"><label>备注<input id="probeNote" maxlength="200"></label><button id="probeSaveMap" class="small">保存映射</button></div></article><article class="card"><h2>试验矩阵与解码审计</h2><div id="probeMatrix" class="muted">尚无试验记录。</div><details><summary>原始字节审计</summary><div id="probeDecodeAudit" class="muted">尚无数据。</div></details></article></details>
+</details>
+</div>
+</section>
+</main>
+<footer><span>原始录制与处理结果保存在本机</span>
+<details><summary>数据保存位置</summary><code id="outputPath"></code></details></footer>
+<div id="toast" role="alert" class="toast hidden"></div>
+<script src="./review_event_view.js?v=capture-review-20261116-4"></script>
+<script src="./recorded-hand-view.js?v=capture-review-20261116-4"></script>
+<script src="./qr-renderer.js"></script><script src="./qr-timecode.js?v=2"></script>
+<script src="./app.js?v=qr-recording-1"></script><script src="./guided-capture.js?v=capture-review-20261116-4"></script><script src="./exo-setup.js?v=1"></script></body></html>

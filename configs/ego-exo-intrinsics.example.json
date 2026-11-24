@@ -1,0 +1,9 @@
+{
+  "schema": "ego-exo-calibration-v1",
+  "intrinsics": {
+    "model": "pinhole",
+    "image_size": [1920, 1080],
+    "K": [[1250, 0, 960], [0, 1250, 540], [0, 0, 1]],
+    "D": [0, 0, 0, 0, 0]
+  }
+}

@@ -1,0 +1,328 @@
+{
+  "schema_version": 2,
+  "station": "ego-workbench-capture",
+  "qnbot_runtime_python": null,
+  "hand": "auto",
+  "pose_fps": 8,
+  "preview_fps": 30,
+  "video_decoder": "sw",
+  "video_decoder_note": "sw=software libhevc; nvdec=NVIDIA hevc_cuvid (enable only after the software-vs-NVDEC byte-level comparison passes; no silent fallback either way).",
+  "camera_vid": 8711,
+  "camera_pid": 25,
+  "camera_serial": null,
+  "glove_vid": 1155,
+  "glove_pid": 22329,
+  "camera_port_override": null,
+  "glove_port_override": null,
+  "output_root": "recordings",
+  "replay_source": null,
+  "max_session_seconds": 300,
+  "max_session_bytes": 1073741824,
+  "minimum_free_bytes": 21474836480,
+  "contact_byte_offsets": [
+    390,
+    391,
+    392,
+    393,
+    406,
+    407,
+    408,
+    409,
+    410,
+    411,
+    412,
+    413,
+    414,
+    415,
+    416,
+    417,
+    420,
+    421,
+    422,
+    426,
+    427,
+    428,
+    429,
+    430,
+    431,
+    432,
+    433,
+    434,
+    435,
+    436,
+    437,
+    440,
+    441,
+    442,
+    443,
+    444,
+    446,
+    447,
+    448,
+    449,
+    450,
+    451,
+    452,
+    453,
+    454,
+    455,
+    456,
+    457,
+    460,
+    461,
+    462,
+    463,
+    464,
+    465
+  ],
+  "contact_sites": [
+    {
+      "id": "index_1",
+      "bytes": [
+        430,
+        431,
+        432,
+        433
+      ],
+      "finger": "index",
+      "role": "touch"
+    },
+    {
+      "id": "index_2",
+      "bytes": [
+        450,
+        451,
+        452,
+        453
+      ],
+      "finger": "index",
+      "role": "touch"
+    },
+    {
+      "id": "index_3",
+      "bytes": [
+        410,
+        411,
+        412,
+        413
+      ],
+      "finger": "index",
+      "role": "touch"
+    },
+    {
+      "id": "index_bend",
+      "bytes": [
+        390,
+        391,
+        392,
+        393
+      ],
+      "finger": "index",
+      "role": "bend"
+    },
+    {
+      "id": "middle_1",
+      "bytes": [
+        454,
+        455,
+        456,
+        457
+      ],
+      "finger": "middle",
+      "role": "touch"
+    },
+    {
+      "id": "middle_2",
+      "bytes": [
+        434,
+        435,
+        436,
+        437
+      ],
+      "finger": "middle",
+      "role": "touch"
+    },
+    {
+      "id": "middle_3",
+      "bytes": [
+        414,
+        415,
+        416,
+        417
+      ],
+      "finger": "middle",
+      "role": "touch"
+    },
+    {
+      "id": "ring_1",
+      "bytes": [
+        460,
+        461
+      ],
+      "finger": "ring",
+      "role": "touch"
+    },
+    {
+      "id": "ring_2",
+      "bytes": [
+        440,
+        441
+      ],
+      "finger": "ring",
+      "role": "touch"
+    },
+    {
+      "id": "ring_3",
+      "bytes": [
+        420,
+        421
+      ],
+      "finger": "ring",
+      "role": "touch"
+    },
+    {
+      "id": "pinky_1",
+      "bytes": [
+        462,
+        463,
+        464,
+        465
+      ],
+      "finger": "pinky",
+      "role": "touch"
+    },
+    {
+      "id": "pinky_2",
+      "bytes": [
+        442,
+        443,
+        444
+      ],
+      "finger": "pinky",
+      "role": "touch"
+    },
+    {
+      "id": "pinky_3",
+      "bytes": [
+        422
+      ],
+      "finger": "pinky",
+      "role": "touch"
+    },
+    {
+      "id": "thumb_1",
+      "bytes": [
+        406,
+        407,
+        408,
+        409
+      ],
+      "finger": "thumb",
+      "role": "touch"
+    },
+    {
+      "id": "thumb_2",
+      "bytes": [
+        426,
+        427,
+        428,
+        429
+      ],
+      "finger": "thumb",
+      "role": "touch"
+    },
+    {
+      "id": "thumb_3",
+      "bytes": [
+        446,
+        447,
+        448,
+        449
+      ],
+      "finger": "thumb",
+      "role": "touch"
+    }
+  ],
+  "contact_sites_source": "probe_trials_20260917_press_evidence_not_explicitly_operator_confirmed",
+  "contact_channel_map": [
+    "index_bend",
+    "index_bend",
+    "index_bend",
+    "index_bend",
+    "thumb_1",
+    "thumb_1",
+    "thumb_1",
+    "thumb_1",
+    "index_3",
+    "index_3",
+    "index_3",
+    "index_3",
+    "middle_3",
+    "middle_3",
+    "middle_3",
+    "middle_3",
+    "ring_3",
+    "ring_3",
+    "pinky_3",
+    "thumb_2",
+    "thumb_2",
+    "thumb_2",
+    "thumb_2",
+    "index_1",
+    "index_1",
+    "index_1",
+    "index_1",
+    "middle_2",
+    "middle_2",
+    "middle_2",
+    "middle_2",
+    "ring_2",
+    "ring_2",
+    "pinky_2",
+    "pinky_2",
+    "pinky_2",
+    "thumb_3",
+    "thumb_3",
+    "thumb_3",
+    "thumb_3",
+    "index_2",
+    "index_2",
+    "index_2",
+    "index_2",
+    "middle_1",
+    "middle_1",
+    "middle_1",
+    "middle_1",
+    "ring_1",
+    "ring_1",
+    "pinky_1",
+    "pinky_1",
+    "pinky_1",
+    "pinky_1"
+  ],
+  "contact_channel_map_source": "probe_trials_20260917_press_evidence_not_explicitly_operator_confirmed",
+  "contact_on_delta": 10,
+  "contact_off_delta": 5,
+  "pose_min_detection_confidence": 0.5,
+  "pose_fallback_min_detection_confidence": 0.25,
+  "pose_roi_retry": true,
+  "training": {
+    "task": "future_contact",
+    "horizon_s": 1.0,
+    "image_size": 128,
+    "sample_fps": 5,
+    "maximum_steps": 2000,
+    "maximum_seconds": 900,
+    "batch_size": 16,
+    "epochs": 30,
+    "device": "cpu",
+    "threads": 2,
+    "seed": 17,
+    "learning_rate": 0.001,
+    "distance_support_m": 1.0,
+    "elastic_bins": 16
+  },
+  "import_root": "recordings/imports",
+  "exo_video_root": "recordings/exo-inbox",
+  "exo_profile_root": "recordings/exo-calibrations"
+}
