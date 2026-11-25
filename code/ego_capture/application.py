@@ -1062,6 +1062,20 @@ class Application:
             available.add(path)
         return catalog
 
+    def exo_review_views(self, folder, metadata):
+        from ego_capture.exo_review import views
+
+        selection = self.intake(folder)
+        try:
+            imported = self.current_exo_report(folder, selection)
+        except (OSError, ValueError, KeyError):
+            imported = None
+        try:
+            alignment = self.automatic_alignment(folder)
+        except (OSError, ValueError, KeyError):
+            alignment = None
+        return views(folder, metadata, imported, alignment)
+
     def exo_intrinsics(self, session_id=''):
         from ego_capture.exo_calibration import profiles
         catalog = self._add_configured_files(profiles(self.exo_profiles), self.exo_profile_files, {'.json'})
@@ -1216,6 +1230,47 @@ class CaptureRoutes:
         except (BrokenPipeError, ConnectionResetError):
             pass
 
+    def send_review_video(self, path):
+        with path.open('rb') as handle:
+            size = path.stat().st_size
+            range_header = self.headers.get('Range')
+            start, end = 0, size - 1
+            if range_header is not None:
+                match = re.fullmatch(r'bytes=(\d{0,20})-(\d{0,20})', range_header)
+                if match and match[1]:
+                    start = int(match[1])
+                    end = min(end, int(match[2])) if match[2] else end
+                elif match and match[2]:
+                    start = max(0, size - int(match[2]))
+                else:
+                    start = size
+                if start > end:
+                    self.send_response(416)
+                    self.send_header('Content-Range', f'bytes */{size}')
+                    self.send_header('Content-Length', '0')
+                    self.end_headers()
+                    return
+            self.send_response(206 if range_header is not None else 200)
+            self.send_header('Content-Type', 'video/quicktime' if path.suffix.lower() == '.mov' else 'video/mp4')
+            self.send_header('Content-Length', str(end - start + 1))
+            self.send_header('Accept-Ranges', 'bytes')
+            self.send_header('Cache-Control', 'private, no-store')
+            self.send_header('X-Content-Type-Options', 'nosniff')
+            if range_header is not None:
+                self.send_header('Content-Range', f'bytes {start}-{end}/{size}')
+            self.end_headers()
+            handle.seek(start)
+            remaining = end - start + 1
+            try:
+                while remaining:
+                    block = handle.read(min(1 << 20, remaining))
+                    if not block:
+                        break
+                    self.wfile.write(block)
+                    remaining -= len(block)
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                pass
+
     def get_capture(self, path, query):
         try:
             app = self.app
@@ -1240,6 +1295,25 @@ class CaptureRoutes:
             if path == '/api/exo/board.png':
                 from ego_capture.exo_calibration import board_png
                 return self.send(200, board_png(), 'image/png')
+            if path in ('/api/exo/review-video', '/api/exo/review-poster', '/api/exo/review-frame'):
+                folder = app.closed_session_path(query.get('id', [''])[0])
+                metadata = read_json(folder / 'metadata.json')
+                if metadata.get('session_id') != folder.name:
+                    raise ValueError('录制身份不一致')
+                track_id, revision = (query.get(key, [''])[0] for key in ('track', 'v'))
+                track = next((track for track in app.exo_review_views(folder, metadata)
+                              if track.id == track_id and track.path is not None and track.version == revision), None)
+                if track is None:
+                    return self.send(404, {'message': '找不到所选会话的 EXO 录像'})
+                if path.endswith('-video'):
+                    return self.send_review_video(track.path)
+                if path.endswith('-poster'):
+                    image = track.poster()
+                else:
+                    time_s = float(query.get('time_s', ['nan'])[0])
+                    image = track.frame(time_s)
+                return (self.send(200, image, 'image/jpeg') if image else
+                        self.send(404, {'message': '此时间没有可用的 EXO 画面'}))
             if path == '/api/exo/result':
                 folder = app.closed_session_path(query.get('id', [''])[0])
                 return self.send(200, app.current_exo_report(folder, app.intake(folder)) or {'status': 'missing'})
@@ -1460,6 +1534,7 @@ class CaptureRoutes:
                         guided_file = p / guided_capture.FILE
                         guided = read_json(guided_file) if guided_file.is_file() else None
                         detail['segments'] = review_intervals(p.name, meta['duration_s'], guided, registry=app.segments())
+                        detail['exo_views'] = [track.describe() for track in app.exo_review_views(p, meta)]
                         detail['frames'] = read_jsonl(p / 'derived/paired_frames.jsonl')
                         if meta.get('contact_calibration'):
                             from visuotactile.storage import recorded_task_range

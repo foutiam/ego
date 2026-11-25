@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ego · 双目与手套采集</title><link rel="stylesheet" href="./style.css?v=exo-auto-1"></head>
+<title>Ego · 双目与手套采集</title><link rel="stylesheet" href="./style.css?v=capture-multiview-1"></head>
 <body>
 <nav id="standaloneLinks" class="capture-tools release-links" aria-label="工作台" hidden>
   <a href="/ego-capture/" aria-current="page">采集与处理</a>
@@ -255,22 +255,15 @@
 </section>
 <section id="review" class="page" role="tabpanel" aria-labelledby="tabReview" hidden>
 <div class="section-heading session-heading">
-<div><h2>选段与交接</h2><p id="sessionSummary" class="review-session-summary muted" role="status">选择录制后可以复查双目、触觉和事件。</p></div>
+<div><h2>选段与交接</h2><p id="sessionSummary" class="review-session-summary muted" role="status">选择录制后可以回放各路相机、复查触觉和事件。</p></div>
 <label>录制会话<select id="reviewSession"></select></label></div>
 <p id="reviewEmpty" class="card muted">从上方选择一条录制。</p>
 <button id="reviewStartQuality" type="button" class="primary" hidden>去 03 整理与验收</button>
 <div id="reviewContent" hidden>
 <div class="review-layout">
 <article class="card review-player" aria-labelledby="reviewPlayerTitle">
-<div class="card-title"><h3 id="reviewPlayerTitle">双目回放</h3><span id="reviewTime" class="tag">—</span></div>
-<div class="camera-grid review-cameras">
-<figure><div class="feed"><img id="reviewImage0" class="review-image" alt="复查相机 0"><span class="empty">暂无 CAM 0 画面</span></div><figcaption>CAM 0</figcaption></figure>
-<figure><div class="feed"><img id="reviewImage1" class="review-image" alt="复查相机 1"><span class="empty">暂无 CAM 1 画面</span></div><figcaption>CAM 1</figcaption></figure>
-</div>
-<div class="review-timeline">
-<input id="reviewSlider" type="range" min="0" max="0" step="1" value="0" aria-label="定位双目回放帧">
-<div class="review-timeline-times"><span id="reviewTimelineStart">—</span><span id="reviewTimelineEnd">—</span></div>
-</div>
+<div class="card-title"><h3 id="reviewPlayerTitle">多视角回放</h3><span id="reviewTime" class="tag">—</span></div>
+<div class="review-transport" role="group" aria-label="多视角播放控制">
 <div class="toolbar review-playback">
 <button id="reviewPlay" type="button" class="small primary" disabled>播放</button>
 <button id="reviewPrevious" type="button" class="small" disabled>上一帧</button>
@@ -278,6 +271,15 @@
 <label class="review-speed">倍速<select id="reviewSpeed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></label>
 <label class="check"><input id="reviewLoop" type="checkbox">循环</label>
 <span id="reviewFrameTag" class="muted">0 / 0 帧</span></div>
+<div class="review-timeline">
+<input id="reviewSlider" type="range" min="0" max="0" step="1" value="0" aria-label="定位多视角回放帧">
+<div class="review-timeline-times"><span id="reviewTimelineStart">—</span><span id="reviewTimelineEnd">—</span></div>
+</div>
+</div>
+<div id="reviewCameraGrid" class="camera-grid review-cameras">
+<figure class="review-camera"><figcaption>头戴 CAM 0</figcaption><div class="feed"><img id="reviewImage0" class="review-image" alt="头戴相机 CAM 0 画面"><span class="empty">暂无 CAM 0 画面</span></div></figure>
+<figure class="review-camera"><figcaption>头戴 CAM 1</figcaption><div class="feed"><img id="reviewImage1" class="review-image" alt="头戴相机 CAM 1 画面"><span class="empty">暂无 CAM 1 画面</span></div></figure>
+</div>
 <p id="reviewPlaybackNote" class="muted" role="status"></p>
 <button id="reviewContactCalibration" type="button" class="small" hidden>核对视触校准</button>
 <button id="reviewOpenQuality" type="button" class="small" hidden>查看本次录制的整理详情</button>
@@ -292,6 +294,21 @@
 <button id="reviewOpenWorkflow" type="button" class="small" hidden>在工作流查看</button>
 </div>
 </article>
+<details class="card review-range-editor" id="reviewPublish">
+<summary>自选区间与送入工作流</summary>
+<div class="toolbar">
+<button id="reviewMarkStart" type="button" class="small">设当前时间为起点</button>
+<button id="reviewMarkEnd" type="button" class="small">设当前时间为终点</button>
+</div>
+<div class="form-grid">
+<label>开始（秒）<input id="workflowSegmentStart" type="number" min="0" step="0.000001"></label>
+<label>结束（秒）<input id="workflowSegmentEnd" type="number" min="0" step="0.000001"></label>
+<label>片段名<input id="workflowSegmentName" maxlength="96" placeholder="例如 normal-1"></label>
+<label>类别<select id="workflowSegmentCategory"><option value="normal">正常操作</option><option value="miss">抓取失败</option><option value="adjust">调整操作</option><option value="abort">中止操作</option><option value="reference">标定／参考</option></select></label>
+</div>
+<div class="toolbar"><button id="reviewPreviewRange" type="button" class="small">应用选区</button><button id="workflowSegmentPublish" type="button" class="small">加入工作流</button></div>
+<p id="workflowSegmentStatus" class="muted" role="status"></p>
+</details>
 <details class="card review-events" id="reviewAnnotations">
 <summary>事件标注 <span id="reviewAnnotationScope" class="muted">整条会话</span></summary>
 <form id="manualEventForm" class="manual-event-form" hidden>
@@ -322,22 +339,7 @@
 <p id="policyLabelStatus" class="muted" role="status">选择已加入工作流的片段后查看。</p>
 <div id="policyLabels" class="policy-labels"></div></details>
 </details>
-<details class="card review-range-editor" id="reviewPublish">
-<summary>自选区间与送入工作流</summary>
-<div class="toolbar">
-<button id="reviewMarkStart" type="button" class="small">设当前时间为起点</button>
-<button id="reviewMarkEnd" type="button" class="small">设当前时间为终点</button>
-</div>
-<div class="form-grid">
-<label>开始（秒）<input id="workflowSegmentStart" type="number" min="0" step="0.000001"></label>
-<label>结束（秒）<input id="workflowSegmentEnd" type="number" min="0" step="0.000001"></label>
-<label>片段名<input id="workflowSegmentName" maxlength="96" placeholder="例如 normal-1"></label>
-<label>类别<select id="workflowSegmentCategory"><option value="normal">正常操作</option><option value="miss">抓取失败</option><option value="adjust">调整操作</option><option value="abort">中止操作</option><option value="reference">标定／参考</option></select></label>
-</div>
-<div class="toolbar"><button id="reviewPreviewRange" type="button" class="small">应用选区</button><button id="workflowSegmentPublish" type="button" class="small">加入工作流</button></div>
-<p id="workflowSegmentStatus" class="muted" role="status"></p>
-</details>
-<details class="card compact-details"><summary>录制文件</summary>
+<details class="card review-file-tools compact-details"><summary>录制文件</summary>
 <div class="toolbar"><button id="exportBtn" type="button" class="small">导出完整原始录制 ZIP</button><button id="deleteSession" type="button" class="small quiet danger">删除所选录制</button></div>
 <div id="exportReceipt" class="export-receipt" hidden>
 <p id="exportMessage" role="status"></p>
@@ -592,4 +594,4 @@
 <script src="./review_event_view.js?v=contact-task-alignment"></script>
 <script src="./recorded-hand-view.js?v=capture-review-20261116-4"></script>
 <script src="./qr-renderer.js"></script><script src="./qr-timecode.js?v=4"></script>
-<script src="./app.js?v=exo-auto-1"></script><script src="./guided-capture.js?v=capture-review-20261116-4"></script><script src="./exo-setup.js?v=exo-auto-1"></script><script src="./contact-calibration.js?v=capture-flow-2"></script><script src="./station-paths.js?v=exo-station"></script></body></html>
+<script src="./app.js?v=capture-multiview-1"></script><script src="./guided-capture.js?v=capture-review-20261116-4"></script><script src="./exo-setup.js?v=exo-auto-1"></script><script src="./contact-calibration.js?v=capture-flow-2"></script><script src="./station-paths.js?v=exo-station"></script></body></html>

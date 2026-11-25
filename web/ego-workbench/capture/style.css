@@ -400,19 +400,62 @@ main, main:has(#live.active) { max-width: none; padding: 16px clamp(12px, 2vw, 2
 .qc-facts dd { margin: 0; font-variant-numeric: tabular-nums; }
 .qc-message:empty { display: none; }
 #qualitySummary { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 260px; overflow: auto; }
-.review-layout {
-  display: grid;
-  grid-template-columns: minmax(0, 1.16fr) minmax(340px, 1fr);
-  align-items: start;
-  gap: 14px;
-  margin-bottom: 14px;
-}
+.review-layout { display: grid; gap: 14px; margin-bottom: 14px; }
 .review-layout .card { margin: 0; }
-.review-side { display: grid; gap: 12px; min-width: 0; }
-.review-cameras .feed { aspect-ratio: 16 / 9; }
-.review-cameras .review-image { min-height: 0; }
+.review-side { display: grid; gap: 12px; min-width: 0; align-items: start; }
+.review-side :is(.review-events, .review-file-tools) { grid-column: 1 / -1; }
+@media (min-width: 740px) {
+  .review-side { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.review-cameras { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (min-width: 960px) {
+  .review-cameras:has(> :nth-child(3)) { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+.review-camera {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.review-camera figcaption {
+  align-items: center;
+  color: var(--text);
+  font-weight: 600;
+  margin: 0;
+  min-height: 33px;
+  padding: 6px 9px;
+}
+.review-camera-status { font-weight: 400; }
+.review-camera-unsynced .review-camera-status { color: var(--warn); }
+.review-cameras .feed { aspect-ratio: 16 / 9; border-radius: 0; }
+.review-cameras :is(.review-image, .review-video) {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  border-radius: 0;
+  object-fit: contain;
+}
 .review-cameras .review-image:not([src]), .review-cameras .review-image[src] + .empty { display: none; }
-.review-timeline { margin-top: 12px; }
+.review-cameras .feed > .empty { padding: 8px; }
+.review-transport {
+  position: sticky;
+  z-index: 2;
+  top: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px 14px;
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin-bottom: 12px;
+  padding: 8px 10px;
+}
+.review-timeline { min-width: 0; }
+@media (max-width: 730px) {
+  .review-transport { grid-template-columns: minmax(0, 1fr); }
+}
 #reviewSlider { display: block; width: 100%; margin: 0; padding: 0; accent-color: var(--accent); }
 .review-timeline-times {
   display: flex;
@@ -422,11 +465,7 @@ main, main:has(#live.active) { max-width: none; padding: 16px clamp(12px, 2vw, 2
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
-.review-playback {
-  gap: 6px 9px;
-  padding-top: 10px;
-  border-top: 1px solid var(--line);
-}
+.review-playback { gap: 6px 9px; margin: 0; }
 .review-playback select, .probe-action-grid select { width: auto; max-width: 100%; }
 .review-playback .check { margin: 0; }
 .review-speed { flex-direction: row; align-items: center; }
@@ -458,7 +497,6 @@ main, main:has(#live.active) { max-width: none; padding: 16px clamp(12px, 2vw, 2
 .hand-controls label { flex-direction: row; align-items: center; }
 @media (max-width: 870px) {
   .calib-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .review-layout { grid-template-columns: minmax(0, 1fr); }
   .probe-action-grid { grid-template-columns: minmax(0, 1fr); gap: 0; }
   .hand-view { grid-template-columns: minmax(0, 1fr); }
 }
@@ -547,7 +585,7 @@ main, main:has(#live.active) { max-width: none; padding: 16px clamp(12px, 2vw, 2
 #live .guided-groups { display: grid; grid-template-columns: minmax(140px, 1fr) minmax(145px, 1fr); gap: 7px; }
 #live .guided-groups button { justify-self: start; }
 .review-side .review-events { margin: 0; }
-.review-side .recorded-tactile-layout { margin-top: 12px; grid-template-columns: minmax(0, 1fr) minmax(165px, 0.85fr); }
+.review-side .recorded-tactile-layout { margin-top: 12px; }
 .recorded-hand { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 10px; }
 .hand-layer-options { display: flex; flex-wrap: wrap; gap: 4px 10px; margin: 4px 0 8px; font-size: 12px; }
 .hand-layer-options label { margin: 0; }
@@ -560,14 +598,6 @@ main, main:has(#live.active) { max-width: none; padding: 16px clamp(12px, 2vw, 2
 .manual-event-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px; align-items: start; }
 .manual-event-row > div { grid-column: 1 / -1; padding-left: 8px; }
 .manual-event-row > button:first-child { text-align: left; white-space: normal; }
-@media (min-width: 871px) {
-  .review-player { position: sticky; top: 8px; }
-  .review-range-card { position: sticky; top: 0; z-index: 2; }
-  .review-side { max-height: 675px; overflow: auto; overscroll-behavior: contain; padding: 0 5px 6px 0; scrollbar-gutter: stable; }
-}
-@media (max-width: 1050px) and (min-width: 871px), (max-width: 600px) {
-  .review-side .recorded-tactile-layout { grid-template-columns: minmax(0, 1fr); }
-}
 @media (max-width: 580px) {
   .live-hand .hand-view, #live .guided-groups { grid-template-columns: minmax(0, 1fr); }
 }

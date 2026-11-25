@@ -18,6 +18,7 @@ let TOKEN = '';
 let state = null;
 let sessions = [];
 let reviewFrames = [];
+let reviewExoViews = [], reviewExoKey = '';
 let reviewTaskRange = null;
 let reviewQuality = null;   // the selected session's QC block (contact candidates live here)
 let reviewSessionId = '';
@@ -2570,7 +2571,8 @@ function resetReview() {
   $('loaderResult').textContent = '';
   $('loaderResult').classList.remove('show');
   clearReviewDraft();
-  stopReviewPlayback();
+  renderReviewExo([]);
+  stopReviewPlayback(false);
   showReviewFrame(-1);
   updateReviewActions();
 }
@@ -2705,10 +2707,10 @@ async function loadSessionDetail(id) {
     reviewTaskRange = detail.task_range || null;
     $('reviewContactCalibration').hidden = !detail.metadata?.contact_calibration;
     reviewFrames = [...(detail.frames || [])].sort((a,b) => a.t_s-b.t_s);
+    renderReviewExo(detail.exo_views || []);
     const reviewScope = reviewTaskRange ? '正式任务 ' + (reviewTaskRange[1] - reviewTaskRange[0]).toFixed(1) + ' s'
       : detail.metadata?.contact_calibration ? '没有标记正式任务' : reviewDuration.toFixed(1) + ' s';
-    $('sessionSummary').textContent = [detail.metadata?.object_id, reviewScope,
-      reviewFrames.length + ' 组双目', reviewQuality ? '已整理' : '待整理'].filter(Boolean).join(' · ');
+    $('sessionSummary').textContent = [detail.metadata?.object_id, reviewScope].filter(Boolean).join(' · ');
     $('reviewContent').hidden = false;
     $('reviewOpenQuality').hidden = Boolean(reviewQuality && reviewFrames.length);
     renderReviewSegments(detail.segments || [], id, position);
@@ -2883,7 +2885,7 @@ function updateReviewCursor(time) {
   }
 }
 function seekReviewTime(time, tolerance = .15) {
-  stopReviewPlayback();
+  stopReviewPlayback(false);
   if (!Number.isFinite(time) || !reviewSessionId) return;
   const start = selectedReviewRange?.startS ?? 0;
   const end = selectedReviewRange?.endS ?? reviewDuration;
@@ -2960,7 +2962,7 @@ async function loadPolicyLabels() {
   }
 }
 function selectReviewRange(range, position = null) {
-  stopReviewPlayback();
+  stopReviewPlayback(false);
   const previous = selectedReviewRange;
   selectedReviewRange = range;
   if (range && (range.session !== previous?.session || range.name !== previous.name ||
@@ -3073,6 +3075,175 @@ function decodeReviewImage(url) {
   candidate.src = url;
   return candidate.decode().then(() => url, () => '');
 }
+function showExoMedia(view, active, message = '') {
+  view.mode = active;
+  view.video.hidden = active !== 'video';
+  view.image.hidden = active !== 'image';
+  view.empty.hidden = active !== 'empty';
+  if (message) view.empty.textContent = message;
+}
+
+function renderReviewExo(cameras) {
+  const key = JSON.stringify(cameras);
+  if (key === reviewExoKey) return;
+  reviewExoKey = key;
+  for (const view of reviewExoViews) {
+    view.video.removeAttribute('src');
+    view.video.load();
+    view.figure.remove();
+  }
+  const grid = $('reviewCameraGrid');
+  reviewExoViews = cameras.map(camera => {
+    const figure = document.createElement('figure');
+    figure.className = 'review-camera review-exo-camera';
+    figure.dataset.exoRole = camera.id;
+    const synced = Boolean(camera.frame_url && Number.isFinite(camera.start_s) && Number.isFinite(camera.end_s));
+    figure.classList.toggle('review-camera-unsynced', !synced);
+    const caption = document.createElement('figcaption');
+    const title = document.createElement('span');
+    const roleNumber = camera.id.match(/\d+$/)?.[0];
+    const role = roleNumber ? 'EXO ' + roleNumber : 'EXO';
+    const titleText = camera.label && camera.label !== role ? role + ' · ' + camera.label : role;
+    title.textContent = titleText;
+    const status = document.createElement('span');
+    status.className = 'review-camera-status muted';
+    status.textContent = synced ? ({host_receipt:'主机时间对齐', offset_only:'仅时差校正',
+      offset_and_drift:'二维码对时'})[camera.sync] : '原片预览 · 未对时';
+    if (camera.reason) status.title = camera.reason;
+    caption.append(title, status);
+
+    const feed = document.createElement('div');
+    feed.className = 'feed';
+    const video = document.createElement('video');
+    video.className = 'review-video';
+    video.preload = 'metadata';
+    video.playsInline = true;
+    video.muted = true;
+    video.controls = !synced;
+    video.setAttribute('aria-label', titleText + (synced ? '' : '原片'));
+    if (camera.poster_url && !synced) video.poster = capturePath(camera.poster_url);
+    const image = document.createElement('img');
+    image.className = 'review-image';
+    image.alt = titleText;
+    const empty = document.createElement('span');
+    empty.className = 'empty';
+    feed.append(video, image, empty);
+    figure.append(caption, feed);
+    grid.append(figure);
+
+    const view = {camera, figure, video, image, empty, synced, startingVideo: false, blocked: false,
+      pendingStill: false, stillUrl: '', lastStill: '', requestedAt: -Infinity, mode: '', failed: false};
+    video.addEventListener('error', () => {
+      if (!figure.isConnected) return;
+      view.failed = true;
+      if (synced) {
+        if (!$('review').hidden && reviewTimeS !== null &&
+            reviewTimeS >= camera.start_s && reviewTimeS <= camera.end_s) updateExoStill(view, reviewTimeS);
+      } else {
+        if (camera.poster_url) {
+          image.src = capturePath(camera.poster_url);
+          showExoMedia(view, 'image');
+        } else showExoMedia(view, 'empty', '原片无法在浏览器播放');
+        const download = document.createElement('a');
+        download.className = 'tool-link';
+        download.href = capturePath(camera.video_url);
+        download.download = '';
+        download.textContent = '下载原片';
+        status.append(' · ', download);
+      }
+    });
+    if (camera.video_url && (!synced || camera.media_clock || camera.media_anchors?.length)) {
+      video.src = capturePath(camera.video_url);
+    }
+    showExoMedia(view, !synced && camera.video_url ? 'video' : 'empty',
+      synced ? '等待定位' : '原片不可用');
+    return view;
+  });
+}
+
+function exoMediaTime(camera, cursor, frame) {
+  const clock = camera.media_clock;
+  if (clock) {
+    if (clock.basis === 'cam0_device_s' && frame?.device_ns == null) return null;
+    const time = clock.basis === 'cam0_device_s' ? Number(frame.device_ns) / 1e9 : cursor;
+    return clock.offset_s + clock.scale * time;
+  }
+  const anchors = camera.media_anchors;
+  if (!anchors?.length || cursor < anchors[0][0] || cursor > anchors.at(-1)[0]) return null;
+  let lo = 0, hi = anchors.length - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >>> 1;
+    if (anchors[mid][0] < cursor) lo = mid;
+    else hi = mid;
+  }
+  const [leftTime, leftMedia] = anchors[lo], [rightTime, rightMedia] = anchors[hi];
+  return leftTime === rightTime ? leftMedia
+    : leftMedia + (rightMedia - leftMedia) * (cursor - leftTime) / (rightTime - leftTime);
+}
+
+function updateExoStill(view, cursor) {
+  const url = capturePath(view.camera.frame_url + '&time_s=' + cursor.toFixed(6));
+  if (view.stillUrl === url) {
+    if (view.lastStill === url) showExoMedia(view, 'image');
+    else showExoMedia(view, 'empty', view.pendingStill ? '正在定位画面' : '此时刻无匹配画面');
+    return;
+  }
+  if (reviewPlaying && (view.pendingStill || performance.now() - view.requestedAt < 100)) {
+    showExoMedia(view, view.lastStill ? 'image' : 'empty', '正在定位画面');
+    return;
+  }
+  view.stillUrl = url;
+  view.pendingStill = true;
+  view.requestedAt = performance.now();
+  showExoMedia(view, reviewPlaying && view.lastStill ? 'image' : 'empty', '正在定位画面');
+  decodeReviewImage(url).then(loaded => {
+    if (!view.figure.isConnected || view.stillUrl !== url) return;
+    view.pendingStill = false;
+    if (loaded) {
+      view.image.src = loaded;
+      view.lastStill = url;
+      if (view.mode !== 'video') showExoMedia(view, 'image');
+    } else if (view.mode !== 'video') {
+      view.lastStill = '';
+      showExoMedia(view, 'empty', '此时刻无匹配画面');
+    }
+  });
+}
+
+function updateReviewExo(cursor, frame = null) {
+  for (const view of reviewExoViews) {
+    if (!view.synced) continue;
+    const {camera, video} = view;
+    if (!Number.isFinite(cursor) || cursor < camera.start_s - 1e-6 || cursor > camera.end_s + 1e-6) {
+      video.pause();
+      view.stillUrl = '';
+      view.pendingStill = false;
+      showExoMedia(view, 'empty', '此时段无画面');
+      continue;
+    }
+    const target = reviewPlaying && !view.failed && !view.blocked ? exoMediaTime(camera, cursor, frame) : null;
+    if (!(Number.isFinite(target) && target >= 0 && video.readyState >= 1 && target < video.duration)) {
+      video.pause();
+      updateExoStill(view, cursor);
+      continue;
+    }
+    const rate = (Number($('reviewSpeed').value) || 1) * (camera.media_clock?.scale || 1);
+    if (video.playbackRate !== rate) video.playbackRate = rate;
+    const tolerance = Math.min(.12, Math.max(.055, (camera.frame_interval_s || 0) * 1.5));
+    if (!video.seeking && (video.paused || Math.abs(video.currentTime - target) > tolerance))
+      video.currentTime = target;
+    if (video.paused && !view.startingVideo) {
+      view.startingVideo = true;
+      video.play().catch(error => {
+        if (error.name !== 'AbortError') view.blocked = true;
+      }).finally(() => { view.startingVideo = false; });
+    }
+    if (video.readyState >= 2 && Math.abs(video.currentTime - target) <= tolerance && !video.seeking)
+      showExoMedia(view, 'video');
+    else updateExoStill(view, cursor);
+  }
+}
+
 async function showReviewFrame(index, time = null) {
   const generation = ++reviewPairGeneration;
   const id = reviewSessionId;
@@ -3083,6 +3254,7 @@ async function showReviewFrame(index, time = null) {
   const slider = $('reviewSlider');
   const note = $('reviewPlaybackNote');
   updateReviewCursor(cursor);
+  updateReviewExo(cursor, frame);
   slider.setAttribute('aria-valuetext', formatReviewTime(cursor));
   if (frame) slider.value = index;
   $('reviewPrevious').disabled = !count || Number(slider.value) <= reviewFirst;
@@ -3110,12 +3282,17 @@ async function showReviewFrame(index, time = null) {
       + '双目设备时间差 ' + (frame.stereo_delta_ms ?? '—') + ' ms'
     : '一个或两个相机画面载入失败。';
 }
-function stopReviewPlayback() {
+function stopReviewPlayback(showStill = true) {
+  const wasPlaying = reviewPlaying;
   reviewPlaying = false;
   reviewPlayRun++;
   clearTimeout(reviewTimer);
   reviewTimer = null;
   $('reviewPlay').textContent = '播放';
+  if (wasPlaying) {
+    for (const view of reviewExoViews) if (view.synced) view.video.pause();
+    if (showStill && !$('review').hidden) updateReviewExo(reviewTimeS);
+  }
 }
 function scheduleReviewFrame(index, run, frameShownAt) {
   if (!reviewPlaying || run !== reviewPlayRun) return;
@@ -3145,7 +3322,7 @@ $('reviewPlay').addEventListener('click', async () => {
 });
 for (const [button,step] of [['reviewPrevious',-1], ['reviewNext',1]]) {
   $(button).onclick = () => {
-    stopReviewPlayback();
+    stopReviewPlayback(false);
     showReviewFrame(Number($('reviewSlider').value) + step);
   };
 }
@@ -3313,13 +3490,17 @@ async function showCaptureTab(id) {
     panel.classList.toggle('active', active);
   }
   updateLiveQr();
-  if (id !== 'review') stopReviewPlayback();
+  if (id !== 'review') {
+    stopReviewPlayback(false);
+    for (const view of reviewExoViews) view.video.pause();
+  }
   if (id === 'directory' && !$('importPanel').hidden) loadImports();
   if (id === 'review') {
     if (reviewSessionId !== selectedSessionId || !reviewSessionId || pendingReviewSegment ||
         Boolean(reviewQuality) !== Boolean(sessions.find(s => s.session_id === selectedSessionId)?.processed)) {
       await loadSessionDetail(selectedSessionId);
     } else {
+      updateReviewExo(reviewTimeS);
       updateReviewAnnotations();
     }
   }
@@ -3357,7 +3538,7 @@ window.addEventListener('message', event => {
     openSessionReview(sessionId).catch(error => toast(error.message));
   }
 });
-$('reviewSlider').addEventListener('input', e => { stopReviewPlayback(); showReviewFrame(+e.target.value); });
+$('reviewSlider').addEventListener('input', e => { stopReviewPlayback(false); showReviewFrame(+e.target.value); });
 $('refreshCalib').addEventListener('click', loadCalibration);
 if ($('submitEyeCheck')) $('submitEyeCheck').addEventListener('click', submitEyeAssignment);
 
