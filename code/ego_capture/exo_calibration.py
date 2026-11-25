@@ -218,7 +218,7 @@ def calibrate(table_video, *, imported=None, intrinsic_video=None, square_mm=25.
                                 holdout_rms_px=rms, holdout_p95_px=float(np.percentile(errors, 95))))
 
 
-def _checked_setup(rows, videos, calibration_profiles):
+def checked_setup(rows, videos, calibration_profiles):
     if not isinstance(rows, list) or not 1 <= len(rows) <= 8:
         raise ValueError('请选择 1–8 路 EXO')
     used_roles, used_videos = set(), set()
@@ -229,17 +229,25 @@ def _checked_setup(rows, videos, calibration_profiles):
         names = [row.get(k) for k in ('video', 'table_video', 'intrinsic_video')]
         if not isinstance(role, str) or not ROLE.fullmatch(role) or role in used_roles:
             raise ValueError('EXO 编号无效或重复')
-        if any(not isinstance(name, str) or name not in videos for name in names[:2]) or (
-                names[2] and (not isinstance(names[2], str) or names[2] not in videos)):
-            raise ValueError(f'{role}：请选择原始录像和桌面标定板录像')
-        if names[0] in used_videos:
+        time_only = row.get('time_only') is True
+        required = names[:1] if time_only else names[:2]
+        if any(not isinstance(name, str) or name not in videos for name in required) or (
+                not time_only and names[2] and (not isinstance(names[2], str) or names[2] not in videos)):
+            raise ValueError(f'{role}：请选择原始录像和所需的标定录像')
+        if videos[names[0]] in used_videos:
             raise ValueError('每路 EXO 须使用不同的原始视频')
         profile = row.get('profile')
-        if profile and (not isinstance(profile, str) or profile not in calibration_profiles):
-            raise ValueError(f'{role}：请选择可用的标定档案')
+        if not time_only:
+            if profile and (not isinstance(profile, str) or profile not in calibration_profiles):
+                raise ValueError(f'{role}：请选择可用的标定档案')
+            if not (profile or names[2]):
+                raise ValueError(f'{role}：请选择内参档案或内参录像')
         used_roles.add(role)
-        used_videos.add(names[0])
-        yield row
+        used_videos.add(videos[names[0]])
+        yield dict(role=role, video=names[0], time_only=time_only,
+                   table_video=None if time_only else names[1],
+                   intrinsic_video=None if time_only or profile else names[2],
+                   profile=None if time_only else profile)
 
 
 def _session_time(clock, origin_host_s, source_s):
@@ -247,7 +255,7 @@ def _session_time(clock, origin_host_s, source_s):
             + clock['scale'] * (source_s - clock['source_origin_s']))
 
 
-def _ego_timeline(folder, destination, clocks, start_host_s, square_mm):
+def _ego_timeline(folder, destination, clocks, start_host_s, square_mm, *, spatial=True):
     """Map each exposure to the station clock and solve the moving camera where visible."""
     report = json.loads((folder / 'calibration.json').read_text(encoding='utf-8-sig'))
     reported = report.get('reported') or {}
@@ -267,7 +275,7 @@ def _ego_timeline(folder, destination, clocks, start_host_s, square_mm):
                          table_pose=None, table_pose_status='missing_device_intrinsics')
             counts[eye]['frames'] += 1
             lens = reported.get(f'/ego/camera/{eye}/intrinsics') or {}
-            if ('kannala' in str(lens.get('distortion_model', '')).lower()
+            if (spatial and 'kannala' in str(lens.get('distortion_model', '')).lower()
                     and len(lens.get('K') or ()) == 9 and len(lens.get('D') or ()) == 4
                     and lens.get('width', 0) > 0 and lens.get('height', 0) > 0):
                 entry['table_pose_status'] = 'board_not_verified'
@@ -304,7 +312,7 @@ def process_exo(folder, rows, video_root, profile_root, minimum_free_bytes, prog
     """Publish a portable EXO snapshot only after calibration and synchronization pass."""
     videos = exo_catalog(video_root) if video_catalog is None else video_catalog
     calibration_profiles = profiles(profile_root) if profile_catalog is None else profile_catalog
-    rows = list(_checked_setup(rows, videos, calibration_profiles))
+    rows = list(checked_setup(rows, videos, calibration_profiles))
     sources = list(dict.fromkeys(videos[row[key]] for row in rows
                                 for key in ('video', 'table_video', 'intrinsic_video') if row.get(key)))
     required = sum(path.stat().st_size for path in sources)
@@ -330,6 +338,11 @@ def process_exo(folder, rows, video_root, profile_root, minimum_free_bytes, prog
         cameras = []
         for row in rows:
             role = row['role']
+            video = copied[videos[row['video']]]
+            if row['time_only']:
+                cameras.append(dict(role=role, video=f'{generation}/{video.name}', original_name=row['video'],
+                                    validation={'status': 'time_only'}))
+                continue
             profile_name = row.get('profile')
             profile_path = calibration_profiles[profile_name] if profile_name else None
             progress(f'{role}：解析桌面标定板')
@@ -339,7 +352,6 @@ def process_exo(folder, rows, video_root, profile_root, minimum_free_bytes, prog
                                 square_mm=measured_square_mm)
             profile_file = assets / f'{role}-calibration.json'
             dump_json(profile_file, profile)
-            video = copied[videos[row['video']]]
             with av.open(str(video)) as container:
                 stream = container.streams.video[0] if container.streams.video else None
                 if stream is None or [stream.width, stream.height] != profile['intrinsics']['image_size']:
@@ -359,7 +371,8 @@ def process_exo(folder, rows, video_root, profile_root, minimum_free_bytes, prog
         start = json.loads((folder / 'metadata.json').read_text(encoding='utf-8'))['start_mono_ns'] / 1e9
         progress('头戴双目：生成对齐帧索引与桌面位姿')
         ego_frames = assets / 'ego-frames.jsonl'
-        ego_coverage = _ego_timeline(folder, ego_frames, report['cameras'][:2], start, measured_square_mm)
+        ego_coverage = _ego_timeline(folder, ego_frames, report['cameras'][:2], start, measured_square_mm,
+                                     spatial=any(camera.get('calibration') for camera in cameras))
         for camera, clock in zip(cameras, report['cameras'][2:], strict=True):
             clock['name'] = camera['role']
             timeline = assets / f'{camera["role"]}-frames.jsonl'
@@ -376,6 +389,8 @@ def process_exo(folder, rows, video_root, profile_root, minimum_free_bytes, prog
         result['ego'] = dict(frames=f'{generation}/{ego_frames.name}', cameras=ego_coverage,
                              table_pose_convention='p_camera = R_camera_from_table @ p_table + t_camera_from_table_m')
         for camera in cameras:
+            if 'calibration' not in camera:
+                continue
             name = f"{camera['role']}-{camera['calibration_sha256'][:12]}.json"
             existing = profile_root / name
             if not existing.exists():
@@ -405,6 +420,6 @@ def session_assets(folder):
             raise ValueError(f'缺少 EXO 录制资产 {relative}')
         verified.append(asset)
     for camera in manifest['cameras']:
-        if hashlib.sha256((folder/camera['calibration']).read_bytes()).hexdigest() != camera['calibration_sha256']:
+        if camera.get('calibration') and hashlib.sha256((folder/camera['calibration']).read_bytes()).hexdigest() != camera['calibration_sha256']:
             raise ValueError('EXO 标定档案与处理记录不匹配')
     return [pointer, *verified]

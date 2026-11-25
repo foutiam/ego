@@ -255,8 +255,9 @@
     try {
       apply(await post('/api/guided/finish', {session_id:manifest.session_id}));
       notifyEgoCaptureUpdated();
-      message('时间轴已保存。可选择录制分段进入复查。');
+      message('时间轴已保存。');
       await loadSessions();
+      await openIntake(manifest.session_id);
     } catch (error) {
       message(error.message, true);
     } finally {

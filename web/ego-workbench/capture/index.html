@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ego · 双目与手套采集</title><link rel="stylesheet" href="./style.css?v=station-paths-1"></head>
+<title>Ego · 双目与手套采集</title><link rel="stylesheet" href="./style.css?v=capture-steps-1"></head>
 <body>
 <nav id="standaloneLinks" class="capture-tools release-links" aria-label="工作台" hidden>
   <a href="/ego-capture/" aria-current="page">采集与处理</a>
@@ -8,9 +8,11 @@
 </nav>
 <nav class="capture-tools" aria-label="采集工具">
   <div class="capture-tabs" role="tablist" aria-label="采集分栏">
-    <button type="button" id="tabCalib" class="tab" data-tab="calib" role="tab" aria-controls="calib" aria-selected="false" tabindex="-1"><span aria-hidden="true">00</span>标定与同步</button>
-    <button type="button" id="tabDirectory" class="tab active" data-tab="directory" role="tab" aria-controls="directory" aria-selected="true"><span aria-hidden="true">01</span>录制目录</button>
-    <button type="button" id="tabReview" class="tab" data-tab="review" role="tab" aria-controls="review" aria-selected="false" tabindex="-1"><span aria-hidden="true">02</span>选段与标注</button>
+    <button type="button" id="tabCalib" class="tab" data-tab="calib" role="tab" aria-controls="calib" aria-selected="false" tabindex="-1"><span aria-hidden="true">00</span>设备与标定</button>
+    <button type="button" id="tabDirectory" class="tab active" data-tab="directory" role="tab" aria-controls="directory" aria-selected="true"><span aria-hidden="true">01</span>录制</button>
+    <button type="button" id="tabIntake" class="tab" data-tab="intake" role="tab" aria-controls="intake" aria-selected="false" tabindex="-1"><span aria-hidden="true">02</span>导入与复核</button>
+    <button type="button" id="tabQuality" class="tab" data-tab="quality" role="tab" aria-controls="quality" aria-selected="false" tabindex="-1"><span aria-hidden="true">03</span>整理与验收</button>
+    <button type="button" id="tabReview" class="tab" data-tab="review" role="tab" aria-controls="review" aria-selected="false" tabindex="-1"><span aria-hidden="true">04</span>选段与交接</button>
   </div>
   <span id="modeTag" class="tag">实时模式</span>
 </nav>
@@ -24,11 +26,11 @@
 <section id="firstCaptureHelp" class="card capture-start" aria-labelledby="firstCaptureTitle">
   <div>
     <h2 id="firstCaptureTitle">第一次录制</h2>
-    <p>确认双目和手套后，在实时录制里开始。停止保存后，工作台会自动整理会话。</p>
+    <p>先确认设备与保存目录。停止录制后，在 02 选择 EXO 原片并核对视触。</p>
   </div>
   <ol aria-label="录制步骤">
     <li><button type="button" class="small" data-open-capture-paths="storage">录制保存位置</button></li><li><button id="firstCaptureCalibration" type="button" class="small">设备标定</button></li>
-    <li>实时录制</li><li>整理与选段</li>
+
   </ol>
 </section>
 <div class="section-heading" id="directoryHeading"><div><h2>录制目录</h2></div>
@@ -202,19 +204,23 @@
 <article class="card directory-list" id="directoryList"><div class="card-title"><h3>录制会话</h3><span id="sessionCount" class="tag">0 条</span></div>
 <div id="sessionTable" class="session-list"></div>
 <select id="sessionSelect" hidden aria-label="当前录制"></select></article>
-<section id="quality" class="page card directory-quality" aria-labelledby="qualityTitle" hidden>
-<div class="section-heading session-heading"><div><h3 id="qualityTitle" tabindex="-1">整理与标定</h3><p id="qualityRecording"></p></div>
-<button id="closeQuality" type="button" class="small">收起整理详情</button></div>
+</section>
+<section id="quality" class="page card directory-quality" role="tabpanel" aria-labelledby="tabQuality" hidden>
+<div class="section-heading session-heading"><div><h3 id="qualityTitle" tabindex="-1">整理与验收</h3><p id="qualityRecording" class="muted"></p></div>
+<label>录制会话<select id="qualitySession"></select></label></div>
+<p id="qualityChoose" class="muted">请选择一条已保存的录制。</p>
 <div id="qualityContent" hidden>
 <article class="card qc-processing">
 <div class="card-title"><h3>录制整理</h3><span id="qcStatus" class="tag" role="status">待整理</span></div>
-<p class="muted">保存后自动整理双目、手套和直连 EXO，并扫描各路二维码。</p>
+<p id="qualityIntakeSummary" class="muted"></p>
 <div id="qcMetrics" class="qc-metrics" hidden>
 <div><span>双目配对</span><strong id="qcStereoCount">—</strong></div>
 <div><span>有效手套帧</span><strong id="qcGloveCount">—</strong></div>
 <div><span>接触候选区间</span><strong id="qcContactCount">—</strong></div></div>
 <p id="qcJobMessage" class="qc-message muted" role="status"></p>
-<div class="toolbar"><button type="button" id="process" class="small">开始整理</button><button type="button" id="qualityOpenReview" class="small primary">去 02 选段与标注</button></div>
+<div class="toolbar"><button type="button" id="closeQuality" class="small">回到 02 导入与复核</button>
+<button type="button" id="process" class="primary">开始整理</button>
+<button type="button" id="qualityOpenReview" class="small" disabled>去 04 选段与交接</button></div>
 </article>
 <div class="qc-calibration-grid">
 <article class="card">
@@ -231,17 +237,17 @@
 </article></div>
 <article class="card">
 <div class="card-title"><h3>同步检查</h3><span id="qcQrStatus" class="tag"></span></div>
-<dl id="qcSyncFacts" class="qc-facts"></dl>
+<dl id="qcSyncFacts" class="qc-facts"></dl><dl id="qcIntakeFacts" class="qc-facts" hidden></dl>
 <p class="muted">二维码结果用于校正视频时间。手套的采样延迟可在「标定与同步」用一次可见的触觉动作检查。</p>
 <details class="compact-details"><summary>查看完整整理报告</summary><pre id="qualitySummary" class="muted"></pre></details>
 </article></div>
 </section>
-</section>
 <section id="review" class="page" role="tabpanel" aria-labelledby="tabReview" hidden>
 <div class="section-heading session-heading">
-<div><h2>选段与标注</h2><p id="sessionSummary" class="review-session-summary muted" role="status">选择录制后可以复查双目、触觉和事件。</p></div>
+<div><h2>选段与交接</h2><p id="sessionSummary" class="review-session-summary muted" role="status">选择录制后可以复查双目、触觉和事件。</p></div>
 <label>录制会话<select id="reviewSession"></select></label></div>
 <p id="reviewEmpty" class="card muted">从上方选择一条录制。</p>
+<button id="reviewStartQuality" type="button" class="primary" hidden>去 03 整理与验收</button>
 <div id="reviewContent" hidden>
 <div class="review-layout">
 <article class="card review-player" aria-labelledby="reviewPlayerTitle">
@@ -330,19 +336,16 @@
 </div>
 </section>
 <section id="calib" class="page" role="tabpanel" aria-labelledby="tabCalib" hidden>
-<div class="section-heading calib-heading"><h2>标定与同步</h2>
-<button id="calibOpenLive" type="button" class="small">转到实时录制</button></div>
+<div class="section-heading calib-heading"><h2>设备与标定</h2>
+<div class="toolbar"><a class="small tool-link" href="./api/exo/board.png" download="ego-charuco-8x5-25mm.png">下载桌面标定板</a>
+<button id="calibOpenLive" type="button" class="primary small">去 01 录制</button></div></div>
 <nav class="calib-nav" aria-label="标定工具">
 <button type="button" data-calib-view="calibDevices" aria-controls="calibDevices" aria-pressed="true">当前设备标定</button>
-<button type="button" data-calib-view="calibClocks" aria-controls="calibClocks" aria-pressed="false">二维码对时</button>
-<button id="calibContactTab" type="button" data-calib-view="calibContact" aria-controls="calibContact" aria-pressed="false" hidden>视触复核</button>
+
 <button type="button" data-calib-view="calibAdvanced" aria-controls="calibAdvanced" aria-pressed="false">高级工具</button>
 </nav>
 
-<div id="calibRecordingTools" class="calib-recording" hidden>
-<label><span>录制会话</span><select id="calibSyncSession"></select></label>
-<button id="calibOpenSnapshot" type="button" class="small" disabled>查看录制快照</button>
-</div>
+
 <div id="calibDevices" class="calib-pane">
 <div class="calib-actions-grid">
 <article class="card calib-task">
@@ -377,6 +380,38 @@
 </div></details>
 </div>
 
+<div id="calibAdvanced" class="calib-pane" hidden>
+<article class="card calib-task"><div class="card-title"><h3>手与相机空间标定</h3></div>
+<details class="compact-details"><summary>AprilTag 坐标约定</summary>
+<p>腕部为原点，单位为米。+x 朝手背，+y 朝拇指，+z 朝手指。验证精度需要独立留出点。</p></details>
+<div id="markerLayoutRows" class="muted">正在读取标记…</div>
+<div class="toolbar"><button id="addMarkerRow" class="small">添加标记</button>
+<button id="saveMarkerLayout" class="small">保存位置</button>
+<button id="runMarkerCalibration" class="primary">用实时画面标定</button>
+<button id="useSessionFrame" class="small">用录制帧标定</button></div>
+<div id="markerCalibResult" class="loader-result"></div>
+<p class="muted small-text" id="markerLayoutNote"></p></article>
+<details id="probe" class="card compact-details"><summary>手套标定、触觉映射与实时诊断</summary>
+<div class="section-heading"><div><h2>触觉信号</h2><p>实时查看并采集原始触觉响应。手势状态仅作为可复现输入记录，不自动解释为压力或关节角。</p></div><span id="probeVersionTag" class="tag">映射版本 —</span></div>
+<div class="probe-action-grid">
+<article class="card"><div class="card-title"><h2>触觉状态采集</h2><span id="probeBaselineTag" class="tag">基线未采集</span></div><div id="probeStatuses" class="muted"></div><div class="toolbar"><label>按压位置<select id="probePos"></select></label><button id="probeBaseline" class="primary">静置基线 3 秒</button><button id="probePress" class="small">按压 4 秒</button><button id="probeBend" class="small">弯曲对照 4 秒</button><button id="probeRest" class="small">静置对照 4 秒</button></div><div class="toolbar"><button id="probeRelaxed" class="small">正常放松手掌静置 4 秒</button><button id="probeFist" class="small">手掌握拳 4 秒</button><button id="probeTogether" class="small">五指并拢 4 秒</button><button id="probeRefresh" class="small quiet">刷新结果</button></div><div id="probeTrialInfo" class="muted">先采集基线，再采集手势或按压状态。</div><div class="probe-plots"><div><p class="chart-label">试验时序</p><canvas id="probeTrialCanvas" width="640" height="170"></canvas></div><div><p class="chart-label">各通道响应</p><canvas id="probeTrialBars" width="640" height="120"></canvas></div></div><div id="probeCandidates"></div><div id="probeDiscovery"></div></article>
+<article class="card"><div class="card-title"><h2>一键采集 24 步状态序列</h2><span id="probeSeqTag" class="tag">未运行</span></div><div id="probeSeqStatus" class="muted">包含放松、握拳、五指并拢、弯曲、按压和对照。</div><div class="toolbar"><button id="probeSeqStart" class="primary">开始序列</button><button id="probeSeqStop" class="small" disabled>停止</button></div><div id="probeSeqResults" class="muted">尚无完成步骤。</div></article>
+</div>
+<details class="compact-details"><summary>高级：运动标定、映射标签与解码审计</summary><article class="card"><div class="card-title"><h2>运动传感组标定</h2><span id="mcalTag" class="tag">未运行</span></div><div id="mcalStatus" class="muted">尚未运行。</div><div class="toolbar"><button id="mcalStart" class="small">开始运动标定</button><button id="mcalStop" class="small" disabled>停止</button></div><div id="mcalResults" class="muted"></div><div id="mcalResult" class="muted"></div></article><article class="card"><h2>映射标签（操作员确认）</h2><div class="probe-labels" id="probeLabels"></div><div class="toolbar"><label>备注<input id="probeNote" maxlength="200"></label><button id="probeSaveMap" class="small">保存映射</button></div></article><article class="card"><h2>试验矩阵与解码审计</h2><div id="probeMatrix" class="muted">尚无试验记录。</div><details><summary>原始字节审计</summary><div id="probeDecodeAudit" class="muted">尚无数据。</div></details></article></details>
+</details>
+</div>
+</section>
+<section id="intake" class="page" role="tabpanel" aria-labelledby="tabIntake" hidden>
+<div class="section-heading intake-heading"><h2>导入与复核</h2>
+<label>录制会话 <select id="calibSyncSession"></select></label></div>
+<div class="card intake-summary">
+<p id="intakeSummary" class="muted" role="status">选择一条已保存的录制。</p>
+<button id="calibOpenSnapshot" type="button" class="primary" disabled>去 03 整理与验收</button>
+</div>
+<nav class="calib-nav" aria-label="录后检查">
+<button type="button" data-calib-view="calibClocks" aria-controls="calibClocks" aria-pressed="true">EXO 原片与标定</button>
+<button id="calibContactTab" type="button" data-calib-view="calibContact" aria-controls="calibContact" aria-pressed="false" hidden>视触复核</button>
+</nav>
 <section id="calibContact" class="calib-pane" aria-labelledby="contactReviewTitle" hidden>
 <div id="contactCalibrationReview" class="card contact-calibration-review">
 <header class="contact-review-header">
@@ -390,6 +425,7 @@
 </div>
 </header>
 <p id="contactReviewStatus" class="contact-review-status" role="status" hidden></p>
+<button id="retryContactPreview" type="button" class="small" hidden>准备复核画面</button>
 <div id="contactReviewFrames" hidden>
 <div class="contact-review-images">
 <figure><figcaption>上一帧 <time id="contactPreviousTime"></time></figcaption><img id="contactPreviousImage" alt="上一帧画面"></figure>
@@ -424,30 +460,48 @@
 <strong id="contactTimingState" hidden></strong>
 </div>
 <div class="contact-review-actions">
-<button id="contactOpenTask" class="small quiet" type="button" disabled>选段与标注</button>
+<button id="contactOpenTask" class="small quiet" type="button" disabled>去 03 整理与验收</button>
 <button id="contactSkip" class="small" type="button" disabled>跳过</button>
 <button id="contactConfirm" class="primary small" type="button" disabled>确认视觉帧</button>
 </div>
 </footer>
 </div>
 </section>
-<div id="calibClocks" class="calib-pane" hidden>
-<div class="calib-actions-grid">
-<article class="card calib-task">
-<div class="card-title"><h3>拍摄时间码</h3></div>
-<ol class="calib-checklist">
-<li>启动手套、Ego 和 Exo 录制。</li>
-<li>保持同一个页面开启。尽量让各路相机在开头、动作间隙和结尾看清二维码。</li>
-<li>停止保存后到「整理详情」看自动对齐结果。独立录像导入后可在下方补做。</li>
-</ol>
+<div id="calibClocks" class="calib-pane">
+<article id="exoSetup" class="card calib-task">
+<div class="card-title"><h3>固定 EXO 相机</h3></div>
+<div class="toolbar exo-file-actions">
+  <button id="chooseIntakeVideo" type="button" class="small">添加 EXO 原片</button>
+  <button id="chooseIntakeProfile" type="button" class="small">添加内参 JSON</button>
+</div>
+<details class="compact-details"><summary>已配置的素材目录</summary><dl class="exo-directories">
+  <dt>原始录像和标定录像</dt><dd class="directory-path"><code id="exoVideoDirectory">正在读取…</code><button type="button" class="small quiet" data-copy-text="exoVideoDirectory" disabled>复制路径</button></dd>
+  <dt>内参 JSON</dt><dd class="directory-path"><code id="exoProfileDirectory">正在读取…</code><button type="button" class="small quiet" data-copy-text="exoProfileDirectory" disabled>复制路径</button></dd>
+</dl></details>
+<details id="exoTableTools" class="compact-details"><summary>桌面标定资料</summary>
+  <p><code>exo1-task.mp4</code> 是录下动作和首尾二维码的原视频，<code>exo1-table.mp4</code> 是固定桌面板录像。有 <code>exo1-lens.json</code> 就选内参档案，否则选多角度拍板的 <code>exo1-intrinsics.mp4</code>。文件名可自定。</p>
+  <div class="toolbar"><a class="tool-link" href="./api/exo/intrinsics-example" download="ego-exo-intrinsics.example.json">下载内参 JSON 示例</a>
+  <label>实测格长（mm）<input id="exoSquareMm" type="number" value="25" min="15" max="40" step="0.01" required></label></div>
+</details>
 <div class="toolbar">
-<button id="calibShowLiveQr" type="button" class="small primary">在实时录制显示</button>
+<button id="addExo" type="button" class="small">添加 EXO</button>
+<button id="refreshExo" type="button" class="small quiet">刷新文件</button>
+</div>
+<div id="exoRows" class="calib-actions-grid"></div>
+<div class="toolbar">
+<button id="processExo" type="button" class="small primary" disabled>保存 EXO 选择</button>
+<button id="readExoReport" type="button" class="small">查看结果</button>
+<a id="exoReport" class="tool-link" download="exo-session.json" hidden>下载处理记录</a>
+</div>
+<p id="exoReady" class="muted" role="status">请先选择录制会话。</p>
+<p id="exoStatus" role="status" class="muted"></p>
+<ul id="exoCameraResults" class="exo-results" hidden></ul>
+</article>
+<details class="card compact-details clock-only"><summary>更多对时工具</summary>
+<div class="toolbar">
+<button id="calibShowLiveQr" type="button" class="small">去实时录制显示二维码</button>
 <a class="tool-link" href="./qr-timecode.html" target="_blank" rel="noopener">打开独立二维码</a>
 </div>
-</article>
-<article class="card calib-task">
-<details class="compact-details clock-only"><summary>只做二维码对时或视触延迟抽检</summary>
-<p class="muted">有固定 EXO 且要计算桌面位置时，请使用下方「固定 EXO 相机」。</p>
 <label for="qrVideos">Exo 原始视频（可选）</label>
 <div class="calib-video-source">
 <select id="qrVideos" size="3" multiple aria-describedby="qrVideoFolder"></select>
@@ -466,57 +520,8 @@
 <p id="syncResult" class="muted" role="status"></p>
 </div>
 </details>
-</article>
-</div>
-<article id="exoSetup" class="card calib-task">
-<div class="card-title"><h3>固定 EXO 相机</h3></div>
-<p>选好上方的录制会话，把各台 EXO 的视频和内参放入对应目录，再点「刷新文件」。</p>
-<dl class="exo-directories">
-  <dt>原始录像和标定录像</dt><dd class="directory-path"><code id="exoVideoDirectory">正在读取…</code><button type="button" class="small quiet" data-copy-text="exoVideoDirectory" disabled>复制路径</button></dd>
-  <dt>内参 JSON</dt><dd class="directory-path"><code id="exoProfileDirectory">正在读取…</code><button type="button" class="small quiet" data-copy-text="exoProfileDirectory" disabled>复制路径</button></dd>
-</dl>
-<details class="compact-details"><summary>查看 EXO 1 的选文件示例</summary>
-  <p><code>exo1-task.mp4</code> 是录下动作和首尾二维码的原视频，<code>exo1-table.mp4</code> 是固定桌面板录像。有 <code>exo1-lens.json</code> 就选内参档案，否则选多角度拍板的 <code>exo1-intrinsics.mp4</code>。文件名可自定。</p>
-  <a href="./api/exo/intrinsics-example" download="ego-exo-intrinsics.example.json">下载内参 JSON 示例</a>
-</details>
-<div class="toolbar">
-<a class="tool-link" href="./api/exo/board.png" download="ego-charuco-8x5-25mm.png">下载标定板</a>
-<label>实测格长（mm）<input id="exoSquareMm" type="number" value="25" min="15" max="40" step="0.01" required></label>
-<button id="addExo" type="button" class="small">添加 EXO</button>
-<button id="refreshExo" type="button" class="small quiet">刷新文件</button>
-</div>
-<div id="exoRows" class="calib-actions-grid"></div>
-<div class="toolbar">
-<button id="processExo" type="button" class="small primary" disabled>计算 EXO 标定与对齐</button>
-<button id="readExoReport" type="button" class="small">查看结果</button>
-<a id="exoReport" class="tool-link" download="exo-session.json" hidden>下载处理记录</a>
-</div>
-<p id="exoReady" class="muted" role="status">请先选择已整理的会话。</p>
-<p id="exoStatus" role="status" class="muted"></p>
-<ul id="exoCameraResults" class="exo-results" hidden></ul>
-</article>
 </div>
 
-<div id="calibAdvanced" class="calib-pane" hidden>
-<article class="card calib-task"><div class="card-title"><h3>手与相机空间标定</h3></div>
-<details class="compact-details"><summary>AprilTag 坐标约定</summary>
-<p>腕部为原点，单位为米。+x 朝手背，+y 朝拇指，+z 朝手指。验证精度需要独立留出点。</p></details>
-<div id="markerLayoutRows" class="muted">正在读取标记…</div>
-<div class="toolbar"><button id="addMarkerRow" class="small">添加标记</button>
-<button id="saveMarkerLayout" class="small">保存位置</button>
-<button id="runMarkerCalibration" class="primary">用实时画面标定</button>
-<button id="useSessionFrame" class="small">用录制帧标定</button></div>
-<div id="markerCalibResult" class="loader-result"></div>
-<p class="muted small-text" id="markerLayoutNote"></p></article>
-<details id="probe" class="card compact-details"><summary>手套标定、触觉映射与实时诊断</summary>
-<div class="section-heading"><div><h2>触觉信号</h2><p>实时查看并采集原始触觉响应。手势状态仅作为可复现输入记录，不自动解释为压力或关节角。</p></div><span id="probeVersionTag" class="tag">映射版本 —</span></div>
-<div class="probe-action-grid">
-<article class="card"><div class="card-title"><h2>触觉状态采集</h2><span id="probeBaselineTag" class="tag">基线未采集</span></div><div id="probeStatuses" class="muted"></div><div class="toolbar"><label>按压位置<select id="probePos"></select></label><button id="probeBaseline" class="primary">静置基线 3 秒</button><button id="probePress" class="small">按压 4 秒</button><button id="probeBend" class="small">弯曲对照 4 秒</button><button id="probeRest" class="small">静置对照 4 秒</button></div><div class="toolbar"><button id="probeRelaxed" class="small">正常放松手掌静置 4 秒</button><button id="probeFist" class="small">手掌握拳 4 秒</button><button id="probeTogether" class="small">五指并拢 4 秒</button><button id="probeRefresh" class="small quiet">刷新结果</button></div><div id="probeTrialInfo" class="muted">先采集基线，再采集手势或按压状态。</div><div class="probe-plots"><div><p class="chart-label">试验时序</p><canvas id="probeTrialCanvas" width="640" height="170"></canvas></div><div><p class="chart-label">各通道响应</p><canvas id="probeTrialBars" width="640" height="120"></canvas></div></div><div id="probeCandidates"></div><div id="probeDiscovery"></div></article>
-<article class="card"><div class="card-title"><h2>一键采集 24 步状态序列</h2><span id="probeSeqTag" class="tag">未运行</span></div><div id="probeSeqStatus" class="muted">包含放松、握拳、五指并拢、弯曲、按压和对照。</div><div class="toolbar"><button id="probeSeqStart" class="primary">开始序列</button><button id="probeSeqStop" class="small" disabled>停止</button></div><div id="probeSeqResults" class="muted">尚无完成步骤。</div></article>
-</div>
-<details class="compact-details"><summary>高级：运动标定、映射标签与解码审计</summary><article class="card"><div class="card-title"><h2>运动传感组标定</h2><span id="mcalTag" class="tag">未运行</span></div><div id="mcalStatus" class="muted">尚未运行。</div><div class="toolbar"><button id="mcalStart" class="small">开始运动标定</button><button id="mcalStop" class="small" disabled>停止</button></div><div id="mcalResults" class="muted"></div><div id="mcalResult" class="muted"></div></article><article class="card"><h2>映射标签（操作员确认）</h2><div class="probe-labels" id="probeLabels"></div><div class="toolbar"><label>备注<input id="probeNote" maxlength="200"></label><button id="probeSaveMap" class="small">保存映射</button></div></article><article class="card"><h2>试验矩阵与解码审计</h2><div id="probeMatrix" class="muted">尚无试验记录。</div><details><summary>原始字节审计</summary><div id="probeDecodeAudit" class="muted">尚无数据。</div></details></article></details>
-</details>
-</div>
 </section>
 </main>
 <footer><span>原始录制与处理结果保存在本机</span>
@@ -579,4 +584,4 @@
 <script src="./review_event_view.js?v=contact-task-alignment"></script>
 <script src="./recorded-hand-view.js?v=capture-review-20261116-4"></script>
 <script src="./qr-renderer.js"></script><script src="./qr-timecode.js?v=4"></script>
-<script src="./app.js?v=station-paths-1"></script><script src="./guided-capture.js?v=capture-review-20261116-4"></script><script src="./exo-setup.js?v=live-sources-1"></script><script src="./contact-calibration.js?v=9"></script><script src="./station-paths.js?v=1"></script></body></html>
+<script src="./app.js?v=capture-steps-1"></script><script src="./guided-capture.js?v=capture-review-20261116-4"></script><script src="./exo-setup.js?v=capture-steps-1"></script><script src="./contact-calibration.js?v=capture-steps-1"></script><script src="./station-paths.js?v=1"></script></body></html>

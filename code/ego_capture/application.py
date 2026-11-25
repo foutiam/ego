@@ -628,6 +628,94 @@ class Application:
             except (OSError, ValueError):
                 continue
 
+    def intake_path(self, folder):
+        return self.root / 'intake' / f'{folder.name}.json'
+
+    def intake(self, folder):
+        path = self.intake_path(folder)
+        return read_json(path) if path.is_file() else {}
+
+    def intake_status(self, folder):
+        from ego_capture.contact_calibration import PARTS, review_notes
+
+        meta = read_json(folder / 'metadata.json')
+        contact = bool(meta.get('contact_calibration'))
+        checks = review_notes(folder) if contact else {}
+        selection = self.intake(folder)
+        exo_result = folder / 'derived/exo-session.json'
+        cameras = read_json(exo_result).get('cameras', []) if exo_result.is_file() else []
+        exo_results = [dict(role=camera['role'], mode=camera['validation']['status'],
+                            residual_ms=camera['clock']['median_abs_residual_ms'],
+                            holdout_rms_px=camera['validation'].get('holdout_rms_px')) for camera in cameras]
+        tactile_status = None
+        if contact and (folder / 'derived/quality.json').is_file():
+            from ego_capture.contact_calibration import timing_for_recording
+            tactile_status = timing_for_recording(folder, meta)[0]['status']
+        return dict(session_id=folder.name, contact=contact,
+                    checks={part:checks.get(part, {}).get('status') for part in PARTS} if contact else {},
+                    cameras=selection.get('cameras', []), square_mm=selection.get('square_mm', 25),
+                    aligned_exo=bool(exo_results), exo_results=exo_results, tactile_status=tactile_status,
+                    needs_review=bool(meta.get('capture_intake_required') and contact and any(
+                        checks.get(part, {}).get('status') not in ('pair_confirmed', 'skipped') for part in PARTS)))
+
+    def add_intake_files(self, folder, field, paths):
+        if field not in station_paths.MULTI:
+            raise ValueError('请选择 EXO 视频或内参档案')
+        with self.lock:
+            selection = self.intake(folder)
+            submitted = list(dict.fromkeys([str(path) for path in paths]))
+            incoming = station_paths.update({}, {field:submitted}, self.config_base)
+            known = selection.get(field, [])
+            selection[field] = list(dict.fromkeys([*known, *incoming.get(field, [])]))
+            path = self.intake_path(folder)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            dump_json(path, selection)
+        return self.intake_status(folder)
+
+    def save_intake_choices(self, folder, cameras, square_mm):
+        from ego_capture.exo_calibration import checked_setup
+
+        if not isinstance(cameras, list) or type(square_mm) not in (int, float) or not 15 <= square_mm <= 40:
+            raise ValueError('请核对 EXO 选择和标定板格长')
+        with self.lock:
+            if (self.job or {}).get('status') == 'running':
+                raise ValueError('处理任务运行中，请在完成后保存选择')
+            checked = list(checked_setup(cameras, self.exo_videos(folder.name), self.exo_intrinsics(folder.name))) if cameras else []
+            selection = dict(self.intake(folder), cameras=checked, square_mm=square_mm)
+            path = self.intake_path(folder)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            dump_json(path, selection)
+        return self.intake_status(folder)
+
+    def prepare_intake_preview(self, session, progress):
+        from ego_capture.contact_calibration import prepare_exo_frames
+        from ego_capture.qr_sync import analyze_recording
+
+        progress('准备视触复核画面与曲线')
+        process_session(session, self.config, progress, infer_pose=False, publish_quality=False)
+        prepare_exo_frames(session, self.config['minimum_free_bytes'])
+        if self.automatic_alignment(session) is None:
+            progress('为复核建立相机时间参考')
+            analyze_recording(session, progress)
+        return self.intake_status(session)
+
+    def finalize_intake(self, session, selection, progress):
+        from ego_capture.exo_calibration import process_exo
+        from ego_capture.qr_sync import analyze_recording
+
+        qc = process_session(session, self.config, progress, publish_quality=False)
+        if self.automatic_alignment(session) is None:
+            progress('正在扫描录制的相机二维码')
+            analyze_recording(session, progress)
+        if selection.get('cameras'):
+            progress('正在对齐选定的 EXO 原片')
+            process_exo(session, selection['cameras'], self.exo_root, self.exo_profiles,
+                        self.config['minimum_free_bytes'], progress,
+                        measured_square_mm=selection['square_mm'],
+                        video_catalog=self.exo_videos(session.name), profile_catalog=self.exo_intrinsics(session.name))
+        dump_json(session / 'derived/quality.json', qc)
+        return qc
+
     def prepare_recording(self, session, progress, *, reprocess=False):
         from ego_capture.qr_sync import analyze_recording
 
@@ -655,14 +743,19 @@ class Application:
             return
         try:
             session = self.closed_session_path(session_id)
+            meta = read_json(session / 'metadata.json')
         except (OSError, ValueError):
             return
-        if (session / 'derived/quality.json').is_file() and self.automatic_alignment(session):
+        if self.automatic_alignment(session) and (session / 'derived/quality.json').is_file():
             return
+        if meta.get('capture_intake_required'):
+            if not meta.get('contact_calibration') or self.automatic_alignment(session):
+                return
+            label, prepare = '准备视触复核', self.prepare_intake_preview
+        else:
+            label, prepare = '整理录制数据（QC）', self.prepare_recording
         try:
-            self.run_job('整理录制数据（QC）',
-                         lambda progress: self.prepare_recording(session, progress),
-                         session_id=session.name)
+            self.run_job(label, lambda progress: prepare(session, progress), session_id=session.name)
         except ValueError:
             # Another local job or capture became active since the idle check.
             self.pending_recording_qc.put(session_id)
@@ -773,29 +866,36 @@ class Application:
         return tuple(dict.fromkeys((base / path).resolve() for path in files))
 
     @staticmethod
-    def _add_configured_files(catalog, files, suffixes):
+    def _add_configured_files(catalog, files, suffixes, prefix='外部文件'):
         available = set(catalog.values())
         for index, path in enumerate(files, 1):
             if path.suffix.lower() not in suffixes or not path.is_file() or path.resolve() != path:
                 continue
             if path in available:
                 continue
-            label = f'外部文件 {index} · {path.name}'
+            label = f'{prefix} {index} · {path.name}'
             while label in catalog:
                 label = '外部 · ' + label
             catalog[label] = path
             available.add(path)
         return catalog
 
-    def exo_intrinsics(self):
+    def exo_intrinsics(self, session_id=''):
         from ego_capture.exo_calibration import profiles
-        return self._add_configured_files(profiles(self.exo_profiles), self.exo_profile_files, {'.json'})
+        catalog = self._add_configured_files(profiles(self.exo_profiles), self.exo_profile_files, {'.json'})
+        if session_id:
+            folder = self.closed_session_path(session_id)
+            files = tuple(Path(path) for path in self.intake(folder).get('exo_profile_files', []))
+            self._add_configured_files(catalog, files, {'.json'}, '本次导入')
+        return catalog
 
     def exo_videos(self, session_id=''):
         from ego_capture.qr_sync import EXO_SUFFIXES, exo_catalog
         videos = self._add_configured_files(exo_catalog(self.exo_root), self.exo_video_files, EXO_SUFFIXES)
         if session_id:
             folder = self.closed_session_path(session_id)
+            files = tuple(Path(path) for path in self.intake(folder).get('exo_video_files', []))
+            self._add_configured_files(videos, files, EXO_SUFFIXES, '本次导入')
             row = read_json(folder / 'metadata.json').get('exo_live', {})
             live = exo_catalog(folder / 'exo-live')
             for role, record in row.items():
@@ -947,7 +1047,7 @@ class CaptureRoutes:
                 return self.send(200, {'video_directory': str(app.exo_root),
                                        'profile_directory': str(app.exo_profiles),
                                        'videos': sorted(app.exo_videos(query.get('id', [''])[0])),
-                                       'profiles': sorted(app.exo_intrinsics())})
+                                       'profiles': sorted(app.exo_intrinsics(query.get('id', [''])[0]))})
             if path == '/api/exo/intrinsics-example':
                 example = ROOT / 'configs/ego-exo-intrinsics.example.json'
                 return self.send(200, example.read_bytes(), 'application/json; charset=utf-8')
@@ -1118,6 +1218,9 @@ class CaptureRoutes:
                 return self.send(200, app.list_sessions())
             if path == '/api/imports':
                 return self.send(200, app.import_catalog())
+            if path == '/api/intake':
+                folder = app.closed_session_path(query.get('id', [''])[0])
+                return self.send(200, app.intake_status(folder))
             if path == '/api/recorded-setups':
                 return self.send(200, app.setup_catalog())
             if path == '/api/recorded-tactile':
@@ -1343,6 +1446,20 @@ class CaptureRoutes:
                 if not submitted or not set(submitted) <= known:
                     raise ValueError('提交的相机流与设备自报的流不一致')
                 result = camera_calibration.write_eye_assignment(app.root, submitted)
+            elif path == '/api/intake/files':
+                folder = app.closed_session_path(data.get('session_id', ''))
+                field = data.get('field')
+                if field not in station_paths.MULTI:
+                    raise ValueError('请选择 EXO 视频或内参档案')
+                chosen = station_paths.choose(field, app.config_base, data.get('current', ''))
+                result = app.add_intake_files(folder, field, chosen) if chosen else app.intake_status(folder)
+            elif path == '/api/intake':
+                folder = app.closed_session_path(data.get('session_id', ''))
+                result = app.save_intake_choices(folder, data.get('cameras'), data.get('square_mm', 25))
+            elif path == '/api/intake/preview':
+                folder = app.closed_session_path(data.get('session_id', ''))
+                result = app.run_job('准备视触复核', lambda progress: app.prepare_intake_preview(folder, progress),
+                                     session_id=folder.name)
             elif path == '/api/exo/process':
                 from ego_capture.exo_calibration import process_exo
                 folder = app.closed_session_path(data.get('session_id', ''))
@@ -1352,7 +1469,7 @@ class CaptureRoutes:
                     folder, data.get('cameras'), app.exo_root, app.exo_profiles,
                     app.config['minimum_free_bytes'], progress,
                     measured_square_mm=data.get('square_mm', 25),
-                    video_catalog=app.exo_videos(folder.name), profile_catalog=app.exo_intrinsics()),
+                    video_catalog=app.exo_videos(folder.name), profile_catalog=app.exo_intrinsics(folder.name)),
                     session_id=folder.name)
             elif path == '/api/calibration/qr-sync':
                 from ego_capture.qr_sync import analyze
@@ -1435,9 +1552,15 @@ class CaptureRoutes:
                 result = app.review_setup(data['session_id'], data['source_id'])
             elif path == '/api/process':
                 p = app.closed_session_path(data['session_id'])
-                result = app.run_job('整理录制数据（QC）',
-                                     lambda progress: app.prepare_recording(p, progress, reprocess=True),
-                                     session_id=p.name)
+                status = app.intake_status(p)
+                if status['needs_review']:
+                    raise ValueError('请在 02 导入与复核确认或跳过任务前后对帧')
+                selection = app.intake(p)
+                if read_json(p / 'metadata.json').get('capture_intake_required') or selection.get('cameras'):
+                    process = lambda progress: app.finalize_intake(p, selection, progress)
+                else:
+                    process = lambda progress: app.prepare_recording(p, progress, reprocess=True)
+                result = app.run_job('整理录制数据（QC）', process, session_id=p.name)
             elif path == '/api/workflow-segments':
                 from workflow_segments import register
                 p = app.closed_session_path(data['session_id'])

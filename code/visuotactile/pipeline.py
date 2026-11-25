@@ -117,11 +117,22 @@ def raw_reads(path, kind):
             yield data,int(row['host_ns']),int(row['host_mono_ns'])
 
 
-def process_session(path, config, progress=lambda _:None, infer_pose=True):
+REVIEW_DRAFT = 'capture-preview.json'
+
+
+def process_session(path, config, progress=lambda _:None, infer_pose=True, *, publish_quality=True):
     path=Path(path);meta=read_json(path/'metadata.json')
     if meta['status']=='recording':raise ValueError('请先停止录制')
     target=path/'derived'
     if (target/'quality.json').exists():return read_json(target/'quality.json')
+    draft_path = target / REVIEW_DRAFT
+    if draft_path.is_file():
+        draft = read_json(draft_path)
+        pose_ready = draft.get('recorded_sdk_available') or draft.get('vision_pose_inference_executed')
+        if draft.get('session_id') == meta['session_id'] and (not infer_pose or pose_ready):
+            if publish_quality:
+                dump_json(target / 'quality.json', draft)
+            return draft
     target.mkdir(exist_ok=True)
     for cam in (0,1):(target/f'cam{cam}').mkdir(exist_ok=True)
     parser=VisioDecoder();video=[VideoDecoder(),VideoDecoder()];last_bucket=[None,None];frames=[];poses=[]
@@ -255,7 +266,9 @@ def process_session(path, config, progress=lambda _:None, infer_pose=True):
                  'recorded_sdk_available':recorded_sdk,'vision_pose_inference_executed':pose_model is not None,
                  'clock_alignment':'host_receipt_not_sensor_sync','processing_seconds':time.monotonic()-start,
                  'raw_sha256':{kind:sha256_file(path/f'{kind}.bin') for kind in ('camera','glove')}}
-        dump_json(target/'quality.json',quality);progress('处理完成，请复核接触区间和时间误差');return quality
+        dump_json(target / ('quality.json' if publish_quality else REVIEW_DRAFT), quality)
+        progress('画面与触觉数据已准备')
+        return quality
     finally:
         if pose_model:pose_model.close()
 

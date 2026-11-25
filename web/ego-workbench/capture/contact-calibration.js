@@ -203,7 +203,8 @@
     $('contactReviewFrames').hidden = !hasPair;
     $('contactReviewTactile').hidden = !hasPair || !data?.touch?.length;
     $('contactSkip').disabled = !enabledForSession || saving;
-    $('contactOpenTask').disabled = !enabledForSession || saving;
+    $('contactOpenTask').disabled = !enabledForSession || saving || Boolean(window.intakeExoDirty?.()) ||
+      ['before', 'after'].some(part => !['pair_confirmed', 'skipped'].includes(data?.checks?.[part]?.status));
     if (!hasPair) {
       drawTouch();
       return;
@@ -222,7 +223,8 @@
   }
 
   async function load({force = false, completedSession = null} = {}) {
-    if ($('calibContactTab').hidden || $('calib').hidden || $('calibContact').hidden) return;
+    if ($('calibContactTab').hidden || $('intake').hidden || $('calibContact').hidden) return;
+    $('retryContactPreview').hidden = true;
     const id = $('calibSyncSession').value;
     const part = currentPart();
     const cam = cameraSelect.value || 'cam0';
@@ -270,8 +272,10 @@
         showStatus(data.message);
         if (data.message.startsWith('等待')) {
           const job = state?.job;
-          showStatus(job?.session_id === id && job.status === 'failed'
-            ? '整理失败。请在录制目录查看原因。' : '正在准备画面和触觉…');
+          const preparing = job?.session_id === id && job.status === 'running';
+          $('retryContactPreview').hidden = preparing;
+          showStatus(preparing ? '正在准备复核画面和触觉…' :
+            job?.session_id === id && job.status === 'failed' ? job.message : '复核画面待准备。');
           identity = '';
         }
       }
@@ -296,6 +300,7 @@
     showFrame();
     try {
       await post('/api/contact-calibration/review', payload);
+      refreshIntakeStatus();
       notifyEgoCaptureUpdated();
       if ($('calibSyncSession').value === session_id && currentPart() === part) await load({force:true});
     } catch (error) {
@@ -343,7 +348,7 @@
   window.openContactCalibration = async (id, {firstPart = false} = {}) => {
     if (!sessions.some(session => session.session_id === id && session.contact_calibration)) return;
     setLiveView(false);
-    await chooseSession(id, 'calib');
+    await chooseSession(id, 'intake');
     $('calibSyncSession').value = id;
     if (firstPart) parts[0].checked = true;
     $('calibContactTab').click();
@@ -351,6 +356,20 @@
     await load();
   };
   $('reviewContactCalibration').onclick = () => window.openContactCalibration(reviewSessionId).catch(error => toast(error.message));
-  $('contactOpenTask').onclick = () => chooseSession($('calibSyncSession').value, 'review').catch(error => toast(error.message));
+  $('contactOpenTask').onclick = () => openQuality($('calibSyncSession').value).catch(error => toast(error.message));
+  $('retryContactPreview').onclick = async () => {
+    const button = $('retryContactPreview');
+    button.disabled = true;
+    try {
+      await post('/api/intake/preview', {session_id:$('calibSyncSession').value});
+      showStatus('正在准备复核画面和触觉…');
+      button.hidden = true;
+      await pollState();
+    } catch (error) {
+      showStatus(error.message);
+    } finally {
+      button.disabled = false;
+    }
+  };
 })();
 

@@ -26,7 +26,7 @@ let reviewTimer = null;
 let reviewPairGeneration = 0, reviewPlayRun = 0;
 let reviewSegments = [], pendingReviewSegment = null, selectedReviewRange = null;
 let reviewSetup = null, savedSetups = [], policyRequest = 0;
-let qualitySessionId = '', qualityLoadGeneration = 0, qualityExpanded = false;
+let qualitySessionId = '', qualityLoadGeneration = 0, intakeGeneration = 0, intakeStatus = null;
 let reviewDuration = 0, reviewTimeS = null, reviewFrameTimeS = null;
 let selectedSessionId = '';
 let pressureGeneration = 0, pressureTimer, pressureController, latestPressure;
@@ -154,6 +154,8 @@ function renderQualityJob(job, pending = false) {
   if (!record) return;
   const ownJob = job?.session_id === selectedSessionId ? job : null;
   const busy = pending || ownJob?.status === 'running';
+  const reviewPending = intakeStatus?.session_id !== selectedSessionId || intakeStatus.needs_review ||
+    window.intakeExoDirty?.();
   const processed = Boolean(record.processed);
   const hasReview = processed && (record.quality?.stereo_pairs_paired > 0 || record.quality?.glove_valid_frames > 0);
   const scanningQr = busy && /二维码|时间码/.test(ownJob?.message || '');
@@ -161,7 +163,7 @@ function renderQualityJob(job, pending = false) {
   $('qcJobMessage').textContent = busy ? (ownJob?.message || '正在提交整理…')
     : ownJob?.status === 'failed' ? ownJob.message : '';
   $('process').textContent = processed ? '重新整理' : '开始整理';
-  $('process').disabled = busy || job?.status === 'running';
+  $('process').disabled = busy || reviewPending || job?.status === 'running';
   $('qualityOpenReview').disabled = !hasReview;
 }
 
@@ -176,9 +178,16 @@ async function loadQualityDetail(id) {
   const generation = ++qualityLoadGeneration;
   const record = sessions.find(session => session.session_id === id);
   $('qualityContent').hidden = !record;
-  if (!record) return;
+  $('qualityChoose').hidden = Boolean(record);
+  if (!record) {
+    qualitySessionId = '';
+    $('qualityRecording').textContent = '';
+    return;
+  }
   qualitySessionId = id;
-  $('qualityRecording').textContent = [id, record.object_id].filter(Boolean).join(' · ');
+  $('qualityRecording').textContent = record.name || id;
+  $('qcIntakeFacts').hidden = true;
+  refreshIntakeStatus();
   reviewSetup = null;
   renderReviewSetup();
   const qc = record.quality;
@@ -190,7 +199,7 @@ async function loadQualityDetail(id) {
   renderFacts('qcOriginalSetup', [['随录标定', '正在读取…']]);
   const alignment = record.qr_alignment;
   $('qcQrStatus').textContent = qrSummary(alignment) ||
-    (record.auto_qr_sync ? '待自动扫描' : '尚无自动对齐记录');
+    '待扫描';
   renderFacts('qcSyncFacts', [
     ...(alignment?.outcomes || []).map(camera => [camera.name, qrOutcome(camera)]),
     ['双目设备时间差', formatSyncStats(qc?.stereo_pair_device_delta_ms, true)],
@@ -297,12 +306,12 @@ function checkOrigin(st) {
   else { const b = $('originBanner'); if (b) b.classList.add('hidden'); }
 }
 
-function toast(msg) {
+function toast(msg, tone = 'info') {
   if (window.parent !== window && captureQuery.get('layout') === 'workspace') {
     window.parent.postMessage({ type: 'ego-capture-feedback', message: String(msg) }, location.origin);
     return;
   }
-  const t = $('toast'); t.textContent = msg; t.classList.remove('hidden');
+  const t = $('toast'); t.textContent = msg; t.dataset.tone = tone; t.classList.remove('hidden');
   clearTimeout(t._tm); t._tm = setTimeout(() => t.classList.add('hidden'), 4000);
 }
 
@@ -638,7 +647,7 @@ function renderState() {
      /api/live/meta and /api/live/touch loops, not by this 2 s status poll. */
   if (state.job) renderJob(state.job);
   window.refreshContactCalibration?.();
-  if (qualityExpanded && $('directory').classList.contains('active')) renderQualityJob(state.job);
+  if (!$('quality').hidden) renderQualityJob(state.job);
   if (Date.now() - lastImportPoll > 12000) loadImports();
   setCopyableText('outputPath', state.output_root);
   renderPhoneQrAddress();
@@ -2083,8 +2092,9 @@ function renderJob(job) {
     const completion = job.finished && job.started + ':' + job.finished;
     const finishedNow = Boolean(completion && shownJobCompletion !== completion);
     if (finishedNow) shownJobCompletion = completion;
-    if (job.status === 'failed' && lastJobStatus !== job.status) toast('任务失败：' + job.message);
-    else if (job.status === 'complete' && finishedNow) toast(job.label + ' 完成');
+    if (job.status === 'failed' && lastJobStatus !== job.status) toast('任务失败：' + job.message, 'error');
+    else if (job.status === 'complete' && finishedNow) toast(
+      job.label === '整理录制数据（QC）' ? '会话已整理' : job.label + '完成');
     lastJobStatus = job.status;
     if (finishedNow) {
       if (job.status === 'complete' && job.label === '整理录制数据（QC）') notifyEgoCaptureUpdated();
@@ -2099,8 +2109,10 @@ function renderJob(job) {
 async function refreshAfterJob(job) {
   try {
     await loadSessions({refreshDetail:job.session_id === selectedSessionId});
-    if (job.label === '整理录制数据（QC）') {
+    if (['准备视触复核', '整理录制数据（QC）'].includes(job.label)) {
       window.refreshContactCalibration?.({completedSession:job.session_id});
+      refreshIntakeStatus();
+      if (job.label === '整理录制数据（QC）') window.refreshIntakeExo?.();
     }
     if (job.label === '导入录制') await loadImports();
 
@@ -2463,14 +2475,11 @@ async function loadSessions({refreshDetail = false} = {}) {
     requestedReviewSession = null;
   }
   if (!sessions.some(session => session.session_id === selectedSessionId)) selectedSessionId = '';
-  if (previous !== selectedSessionId) {
-    qualityExpanded = false;
-    resetReview();
-  }
+  if (previous !== selectedSessionId) resetReview();
   syncSessionPickers();
   renderSessionTable();
-  if (qualityExpanded && $('directory').classList.contains('active') &&
-      (refreshDetail || qualitySessionId !== selectedSessionId)) await loadQualityDetail(selectedSessionId);
+  if (!$('quality').hidden && (refreshDetail || qualitySessionId !== selectedSessionId))
+    await loadQualityDetail(selectedSessionId);
   if ($('review').classList.contains('active') &&
       (refreshDetail || reviewSessionId !== selectedSessionId || pendingReviewSegment)) {
     await loadSessionDetail(selectedSessionId);
@@ -2481,16 +2490,15 @@ function clearCalibrationResult() {
   $('qrResult').textContent = '';
   $('syncResult').textContent = '';
   const missing = !$('calibSyncSession').value;
-  for (const id of ['runQrSync', 'readQrReport', 'runSyncCheck', 'calibOpenSnapshot', 'useSessionFrame']) {
+  for (const id of ['runQrSync', 'readQrReport', 'runSyncCheck', 'useSessionFrame']) {
     $(id).disabled = missing;
   }
 }
 function syncSessionPickers() {
   const calibration = $('calibSyncSession');
   const previousCalibration = calibration.value;
-  const sourceChanged = $('sessionSelect').value !== selectedSessionId;
-  if (sourceChanged) $('exportReceipt').hidden = true;
-  for (const picker of ['sessionSelect', 'reviewSession', 'calibSyncSession']) {
+  if ($('sessionSelect').value !== selectedSessionId) $('exportReceipt').hidden = true;
+  for (const picker of ['sessionSelect', 'reviewSession', 'calibSyncSession', 'qualitySession']) {
     const select = $(picker);
     select.replaceChildren(new Option('选择录制', ''));
     for (const session of sessions) {
@@ -2502,15 +2510,18 @@ function syncSessionPickers() {
       option.dataset.processed = String(Boolean(session.processed));
       select.add(option);
     }
-    select.value = select === calibration && !sourceChanged && previousCalibration ? previousCalibration : selectedSessionId;
+    select.value = selectedSessionId;
     if (!select.value) select.value = '';
   }
-  if (calibration.value !== previousCalibration) clearCalibrationResult();
+  if (calibration.value !== previousCalibration) {
+    clearCalibrationResult();
+    updateIntakeProceed();
+  }
   window.refreshContactCalibration?.();
   window.refreshExoReadiness?.();
 }
 function renderSessionTable() {
-  const quality = $('quality');
+
   $('sessionCount').textContent = sessions.length + ' 条';
   const root = $('sessionTable');
   const focused = root.contains(document.activeElement)
@@ -2531,22 +2542,20 @@ function renderSessionTable() {
     detail.textContent = session.capture_mode === 'quick' ? duration
       : [session.object_id, session.scene_id, session.split, duration].filter(Boolean).join(' · ');
     const status = document.createElement('span');
-    status.textContent = session.processed ? (session.reviewed ? '已复核' : '已整理') : '待整理';
+    status.textContent = session.processed ? (session.reviewed ? '已复核' : '已整理') : '待导入与复核';
     status.className = 'tag';
     const actions = document.createElement('div');
     actions.className = 'session-entry-actions';
-    const views = [['quality','整理详情'], ['review','选段与标注']];
-    if (session.contact_calibration) views.unshift(['contact', '核对视触校准']);
+    const views = session.processed
+      ? [['intake','导入与复核'], ['quality','整理详情'], ['review','选段与交接']]
+      : [['intake','继续导入与复核']];
     for (const [view, label] of views) {
       const button = document.createElement('button');
       button.type = 'button';
       button.className = view === 'review' && session.processed ? 'small primary' : 'small';
       button.dataset.sessionId = session.session_id;
       button.dataset.view = view;
-      if (view === 'quality') {
-        button.setAttribute('aria-expanded', String(qualityExpanded && selectedSessionId === session.session_id));
-        button.setAttribute('aria-controls', 'quality');
-      }
+
       button.setAttribute('aria-label', label + ' · ' + session.session_id);
       button.textContent = label;
       actions.append(button);
@@ -2567,11 +2576,7 @@ function renderSessionTable() {
     empty.textContent = '保存或导入后，会话会显示在这里。';
     rows.push(empty);
   }
-  const selectedRow = rows.findIndex(item => item.dataset.recordingId === selectedSessionId);
-  quality.hidden = !(qualityExpanded && selectedRow >= 0);
-  quality.classList.toggle('active', !quality.hidden);
-  if (!quality.hidden) rows.splice(selectedRow + 1, 0, quality);
-  else $('directoryList').after(quality);
+
   root.replaceChildren(...rows);
   if (focused) {
     [...root.querySelectorAll('button')].find(button => button.dataset.sessionId === focused.id &&
@@ -2607,10 +2612,7 @@ async function chooseSession(id, view, name = null) {
     toast('在录制目录找不到这条录制。');
     return;
   }
-  if (selectedSessionId !== id) {
-    qualityExpanded = false;
-    resetReview();
-  }
+  if (selectedSessionId !== id) resetReview();
   selectedSessionId = id;
   pendingReviewSegment = name ? {session:id, name} : null;
   syncSessionPickers();
@@ -2619,19 +2621,60 @@ async function chooseSession(id, view, name = null) {
 }
 async function openQuality(id) {
   if (!id) return;
-  if (id !== selectedSessionId) resetReview();
-  if (id !== qualitySessionId) {
-    $('qualityRecording').textContent = id;
-    $('qualityContent').hidden = true;
+  await chooseSession(id, 'quality');
+  if (selectedSessionId === id) $('qualityTitle').focus();
+}
+function updateIntakeProceed() {
+  const current = intakeStatus?.session_id === selectedSessionId;
+  $('calibOpenSnapshot').disabled = !current || intakeStatus.needs_review || Boolean(window.intakeExoDirty?.());
+  if (!$('quality').hidden) renderQualityJob(state?.job);
+}
+
+async function refreshIntakeStatus() {
+  const id = selectedSessionId;
+  const request = ++intakeGeneration;
+  const proceed = $('calibOpenSnapshot');
+  if (intakeStatus?.session_id !== id) {
+    intakeStatus = null;
+    proceed.disabled = true;
   }
-  selectedSessionId = id;
-  qualityExpanded = true;
-  syncSessionPickers();
+  if (!id) {
+    $('intakeSummary').textContent = '选择一条已保存的录制。';
+    return;
+  }
+  try {
+    const result = await api('/api/intake?' + new URLSearchParams({id}));
+    if (request !== intakeGeneration || id !== selectedSessionId) return;
+    intakeStatus = result;
+    const labels = {pair_confirmed:'已确认', skipped:'已跳过', visual_confirmed:'待确认触觉'};
+    const touch = result.contact
+      ? ['任务前 ' + (labels[result.checks.before] || '待复核'), '任务后 ' + (labels[result.checks.after] || '待复核')]
+      : ['未启用视触校准'];
+    const exo = result.cameras.length
+      ? '已选 ' + result.cameras.length + ' 路 EXO' : result.aligned_exo ? '已有 EXO 结果' : 'EXO 可选';
+    const summary = [exo, ...touch].join(' · ');
+    $('intakeSummary').textContent = summary;
+    $('qualityIntakeSummary').textContent = summary;
+    const evidence = result.exo_results.map(row => [row.role.toUpperCase(), [
+      '对时残差 ' + row.residual_ms.toFixed(1) + ' ms',
+      row.mode === 'time_only' ? '仅对时' : '桌面标定 RMS ' + row.holdout_rms_px.toFixed(2) + ' px'
+    ].join(' · ')]);
+    if (result.tactile_status) evidence.push(['视触校准', result.tactile_status === 'applied'
+      ? '已应用到正式任务' : '沿用已有时间依据']);
+    renderFacts('qcIntakeFacts', evidence);
+    $('qcIntakeFacts').hidden = !evidence.length;
+    updateIntakeProceed();
+  } catch (error) {
+    if (request !== intakeGeneration) return;
+    $('intakeSummary').textContent = error.message;
+    $('qualityIntakeSummary').textContent = error.message;
+    proceed.disabled = true;
+  }
+}
+async function openIntake(id) {
   setLiveView(false);
-  renderSessionTable();
-  await showCaptureTab('directory');
-  await loadQualityDetail(id);
-  if (selectedSessionId === id && qualityExpanded) $('qualityTitle').focus();
+  await chooseSession(id, 'intake');
+  document.querySelector('[data-calib-view="calibClocks"]').click();
 }
 async function openSessionReview(id, name = null) {
   await chooseSession(id, 'review', name);
@@ -2644,7 +2687,7 @@ async function deleteSessionById(id) {
     toast('已删除：' + id);
     if (id === selectedSessionId) {
       selectedSessionId = '';
-      qualityExpanded = false;
+
       resetReview();
     }
     notifyEgoCaptureUpdated();
@@ -2655,9 +2698,19 @@ let reviewLoadGeneration = 0, reviewEventView = null;
 async function loadSessionDetail(id) {
   const generation = ++reviewLoadGeneration;
   $('reviewEmpty').hidden = Boolean(id);
+  $('reviewEmpty').textContent = '从上方选择一条录制。';
+  $('reviewStartQuality').hidden = true;
   if (!id) {
     $('reviewContent').hidden = true;
     $('sessionSummary').textContent = '选择录制后可以复查双目、触觉和事件。';
+    return;
+  }
+  if (!sessions.find(record => record.session_id === id)?.processed) {
+    $('reviewContent').hidden = true;
+    $('reviewEmpty').hidden = false;
+    $('reviewEmpty').textContent = '这条会话尚未整理。';
+    $('sessionSummary').textContent = '';
+    $('reviewStartQuality').hidden = false;
     return;
   }
   const position = reviewSessionId === id ? reviewTimeS : null;
@@ -3123,24 +3176,19 @@ $('sessionTable').addEventListener('click', event => {
   if (!button) return;
   const id = button.dataset.sessionId;
   if (button.dataset.view === 'quality') {
-    if (qualityExpanded && selectedSessionId === id) closeQuality(id);
-    else openQuality(id).catch(error => toast(error.message));
-  } else if (button.dataset.view === 'contact') {
-    window.openContactCalibration?.(id).catch(error => toast(error.message));
+    openQuality(id).catch(error => toast(error.message));
+  } else if (button.dataset.view === 'intake') {
+    openIntake(id).catch(error => toast(error.message));
   } else {
     chooseSession(id, 'review').catch(error => toast(error.message));
   }
 });
 $('reviewSession').onchange = event => chooseSession(event.target.value, 'review').catch(error => toast(error.message));
-function closeQuality(id) {
-  qualityExpanded = false;
-  renderSessionTable();
-  const buttons = [...$('sessionTable').querySelectorAll('button[data-view=quality]')];
-  buttons.find(button => button.dataset.sessionId === id)?.focus({preventScroll:true});
-}
-$('closeQuality').onclick = () => closeQuality(selectedSessionId);
+$('qualitySession').onchange = event => chooseSession(event.target.value, 'quality').catch(error => toast(error.message));
+$('closeQuality').onclick = () => openIntake(selectedSessionId).catch(error => toast(error.message));
 $('qualityOpenReview').onclick = () => showCaptureTab('review');
-$('reviewOpenQuality').onclick = () => openQuality(selectedSessionId).catch(error => toast(error.message));
+$('reviewOpenQuality').onclick = $('reviewStartQuality').onclick = () =>
+  openQuality(selectedSessionId).catch(error => toast(error.message));
 $('openDeviceCalibration').onclick = () => showCaptureTab('calib');
 $('reviewOpenEvents').onclick = () => {
   $('reviewAnnotations').open = !$('reviewAnnotations').open;
@@ -3226,17 +3274,21 @@ $('calibShowLiveQr').onclick = () => openCalibrationLive(true);
 
 const calibrationViews = [...document.querySelectorAll('[data-calib-view]')];
 function refreshCalibrationView() {
-  const active = calibrationViews.find(button => button.getAttribute('aria-pressed') === 'true');
-  const view = active?.dataset.calibView || 'calibDevices';
-  $('calib').dataset.view = view;
-  $('calibRecordingTools').hidden = view === 'calibDevices';
-  if (view === 'calibClocks') refreshQrVideos();
-  if (view === 'calibContact') window.refreshContactCalibration?.();
-  if (active?.dataset.calibView === 'calibAdvanced') loadMarkerLayout();
+  for (const id of ['calib', 'intake']) {
+    const root = $(id);
+    if (root.hidden) continue;
+    const view = root.querySelector('[data-calib-view][aria-pressed="true"]')?.dataset.calibView;
+    if (view === 'calibClocks') {
+      refreshQrVideos();
+      window.refreshIntakeExo?.();
+    }
+    if (view === 'calibContact') window.refreshContactCalibration?.();
+    if (view === 'calibAdvanced') loadMarkerLayout();
+  }
 }
 for (const button of calibrationViews) {
   button.onclick = () => {
-    for (const candidate of calibrationViews) {
+    for (const candidate of button.closest('nav').querySelectorAll('[data-calib-view]')) {
       candidate.setAttribute('aria-pressed', String(candidate === button));
       $(candidate.dataset.calibView).hidden = candidate !== button;
     }
@@ -3247,9 +3299,8 @@ $('firstCaptureCalibration').addEventListener('click', () => {
   $('tabCalib').click();
   document.querySelector('[data-calib-view="calibDevices"]').click();
 });
-$('calibSyncSession').addEventListener('change', () => {
-  clearCalibrationResult();
-  refreshQrVideos();
+$('calibSyncSession').addEventListener('change', event => {
+  chooseSession(event.target.value, 'intake').catch(error => toast(error.message));
 });
 $('calibOpenSnapshot').onclick = () => {
   openQuality($('calibSyncSession').value).catch(error => toast(error.message));
@@ -3263,7 +3314,7 @@ function setLiveView(enabled) {
   $('directoryHeading').hidden = enabled;
   $('directoryList').hidden = enabled;
   $('importPanel').hidden = enabled;
-  $('quality').hidden = enabled || !qualityExpanded;
+
   if (enabled) refreshLiveSources();
   else loadImports();
   updateLiveQr();
@@ -3307,10 +3358,10 @@ async function showCaptureTab(id) {
       updateReviewAnnotations();
     }
   }
-  if (id === 'calib') {
-    loadCalibration();
-    refreshCalibrationView();
-  }
+  if (id === 'calib') loadCalibration();
+  if (id === 'intake') refreshIntakeStatus();
+  if (id === 'intake' || id === 'calib') refreshCalibrationView();
+  if (id === 'quality') await loadQualityDetail(selectedSessionId);
 }
 for (const tab of captureTabs) {
   tab.addEventListener('click', () => {
@@ -3471,12 +3522,10 @@ $('stopRecord').addEventListener('click', async () => {
       $('recordingName').value = '';
       activeCaptureName = '';
       const incomplete = Object.keys(r.exo || {}).filter(role => r.exo[role].status !== 'saved');
-      toast(incomplete.length ? '会话已保存，EXO 视频不完整：' + incomplete.join('、') : '会话已保存，将自动整理并对齐二维码');
+      toast(incomplete.length ? '会话已保存，EXO 视频不完整：' + incomplete.join('、') : '会话已保存，请在 02 添加 EXO 原片并复核');
     }
     await loadSessions();
-    if (r.session_id && sessions.some(session => session.session_id === r.session_id && session.contact_calibration)) {
-      await window.openContactCalibration?.(r.session_id, {firstPart:true});
-    }
+    if (r.session_id) await openIntake(r.session_id);
   }
   catch (e) { toast(e.message); }
 });
@@ -3691,6 +3740,9 @@ async function pollState() {
 
 pollState().then(async () => {
   await Promise.all([loadSessions(), loadImports()]);
+  if (!sessions.length && !state?.recording && $('tabDirectory').getAttribute('aria-selected') === 'true') {
+    await showCaptureTab('calib');
+  }
   if (captureQuery.get('contactReview') === '1' && selectedSessionId) {
     await window.openContactCalibration?.(selectedSessionId, {firstPart:true});
   }

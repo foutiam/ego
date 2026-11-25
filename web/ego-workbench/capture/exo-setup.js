@@ -1,83 +1,89 @@
-/* Associate calibrated exterior cameras with the selected recording. */
+/* Select the stationary camera files for the current recording before processing. */
 (() => {
-  const panel = document.getElementById('exoSetup');
-  if (!panel) return;
-  const rows = document.getElementById('exoRows');
-  const session = document.getElementById('calibSyncSession');
-  const status = document.getElementById('exoStatus');
-  const result = document.getElementById('exoReport');
-  const ready = document.getElementById('exoReady');
-  const cameraResults = document.getElementById('exoCameraResults');
-  const square = document.getElementById('exoSquareMm');
-  const start = document.getElementById('processExo');
-  const add = document.getElementById('addExo');
-  let catalog = {videos: [], profiles: []};
+  const session = $('calibSyncSession');
+  const rows = $('exoRows');
+  const status = $('exoStatus');
+  const ready = $('exoReady');
+  const save = $('processExo');
+  const square = $('exoSquareMm');
+  const add = $('addExo');
+  const videoPicker = $('chooseIntakeVideo');
+  const profilePicker = $('chooseIntakeProfile');
+  let catalog = {videos:[], profiles:[]};
+  let loadedSession = '';
+  let saved = {cameras:[], square_mm:25};
   let busy = false;
-  let shownCompletion;
+  let version = 0;
 
-  function select(label, empty, field, options) {
+  function select(label, field, options, placeholder) {
     const wrap = document.createElement('label');
     wrap.append(document.createTextNode(label));
-    const control = document.createElement('select');
-    control.dataset.field = field;
-    control.dataset.empty = empty;
-    control.dataset.options = options;
-    wrap.append(control);
+    const input = document.createElement('select');
+    input.dataset.field = field;
+    if (options) {
+      input.dataset.options = options;
+      input.dataset.empty = placeholder;
+    } else {
+      input.replaceChildren(new Option('仅对时', 'clock'), new Option('对时＋桌面标定', 'table'));
+    }
+    wrap.append(input);
     return wrap;
   }
 
-  function fillPicks() {
-    for (const control of rows.querySelectorAll('select')) {
-      const current = control.value;
-      const choices = catalog[control.dataset.options];
-      control.replaceChildren(new Option(control.dataset.empty, ''),
-        ...choices.map(name => new Option(name, name)));
-      control.value = choices.includes(current) ? current : '';
+  function fill() {
+    for (const input of rows.querySelectorAll('select[data-options]')) {
+      const previous = input.value;
+      const choices = catalog[input.dataset.options];
+      input.replaceChildren(new Option(input.dataset.empty, ''), ...choices.map(name => new Option(name, name)));
+      if (choices.includes(previous)) input.value = previous;
     }
   }
 
-  function currentSetup() {
+  function choices() {
     return [...rows.children].map(card => {
-      const values = Object.fromEntries([...card.querySelectorAll('select')]
-        .map(control => [control.dataset.field, control.value]));
-      return {card, enabled:card.querySelector('input').checked, details:card.querySelector('output'),
-        payload:{role:card.dataset.role, video:values.video, table_video:values.table_video,
-          profile:values.profile, intrinsic_video:values.profile ? '' : values.intrinsic_video},
-        missing:[
-          !values.video && '原始录像',
-          !values.table_video && '固定板录像',
-          !(values.profile || values.intrinsic_video) && '内参档案或内参录像'
-        ].filter(Boolean)};
+      const fields = Object.fromEntries([...card.querySelectorAll('select')]
+        .map(input => [input.dataset.field, input.value]));
+      const timeOnly = fields.mode === 'clock';
+      return {card, video:fields.video, timeOnly,
+        missing: Boolean(fields.video && !timeOnly && (!fields.table_video || !(fields.profile || fields.intrinsic_video))),
+        payload:{role:card.dataset.role, video:fields.video, time_only:timeOnly,
+          table_video:timeOnly ? null : fields.table_video,
+          intrinsic_video:timeOnly || fields.profile ? null : fields.intrinsic_video,
+          profile:timeOnly ? null : fields.profile || null}};
     });
   }
 
+  function selectedPayload() {
+    return choices().filter(row => row.video).map(row => row.payload);
+  }
+
+  function dirty() {
+    return session.value === loadedSession && Boolean(loadedSession) &&
+      (JSON.stringify(selectedPayload()) !== JSON.stringify(saved.cameras) || square.valueAsNumber !== saved.square_mm);
+  }
+
   function render() {
-    const setup = currentSetup();
-    const active = setup.filter(row => row.enabled);
-    const selected = session.selectedOptions[0];
-    const complete = active.filter(row => !row.missing.length);
-    const files = active.map(row => row.payload.video).filter(Boolean);
-    const duplicate = new Set(files).size !== files.length;
-    const issue = !catalog.videos.length ? '导入目录暂无视频。复制文件后点「刷新文件」。'
-      : !session.value ? '请选择上方已整理的会话。'
-      : selected?.dataset.processed === 'false' ? '这条录制待整理。先到录制目录完成整理。'
-      : !active.length ? '至少启用一路 EXO。'
-      : duplicate ? '各路 EXO 必须选择不同的原始录像。'
-      : !square.checkValidity() || !Number.isFinite(square.valueAsNumber) ? '请输入标定板的实测格长。'
-      : complete.length !== active.length ? complete.length + '/' + active.length + ' 路文件齐全'
-      : '';
-    start.disabled = busy || Boolean(issue);
-    ready.textContent = busy ? '正在处理，完成后会显示逐路结果。'
-      : issue || '文件齐全，可计算 ' + active.length + ' 路 EXO 标定与对齐。';
-    add.disabled = busy || rows.children.length >= 8;
-    for (const {card,enabled,details,payload,missing} of setup) {
-      card.querySelector('input').disabled = busy;
-      for (const input of card.querySelectorAll('select')) {
-        input.disabled = busy || !enabled || (input.dataset.field === 'intrinsic_video' && !!payload.profile);
-      }
-      details.dataset.ready = String(enabled && !missing.length);
-      details.textContent = !enabled ? '已停用' : missing.length ? '待选：' + missing.join('、') : '文件齐全';
+    const setup = choices();
+    const selected = setup.filter(row => row.video);
+    const duplicate = new Set(selected.map(row => row.video)).size !== selected.length;
+    const missing = selected.some(row => row.missing);
+    const validSession = Boolean(session.value && session.value === loadedSession);
+    save.disabled = busy || !validSession || duplicate || missing || !square.checkValidity() || !dirty();
+    for (const button of [add, videoPicker, profilePicker]) button.disabled = busy || !validSession;
+    add.disabled ||= rows.children.length >= 8;
+    ready.textContent = !session.value ? '请选择录制会话。'
+      : !validSession ? '正在读取已保存的选择…'
+      : duplicate ? '每路 EXO 请选择不同的原片。'
+      : missing ? '请选择固定板视频和内参，或改选「仅对时」。'
+      : !square.checkValidity() ? '请输入实测格长。'
+      : dirty() ? '请保存当前 EXO 选择。'
+      : saved.cameras.length ? '已保存 ' + saved.cameras.length + ' 路 EXO。' : '本次可使用头戴双目和手套。';
+    for (const row of setup) {
+      const tableFields = row.card.querySelector('.exo-table-fields');
+      tableFields.hidden = row.timeOnly;
+      for (const input of row.card.querySelectorAll('select')) input.disabled = busy || !validSession;
     }
+    updateIntakeProceed();
   }
 
   function appendCamera() {
@@ -86,118 +92,162 @@
     card.className = 'card exo-camera';
     card.dataset.role = 'exo-' + number;
     const legend = document.createElement('legend');
-    const enabled = document.createElement('input');
-    enabled.type = 'checkbox';
-    enabled.checked = true;
-    const named = document.createElement('label');
-    named.append(enabled, ' EXO ' + number);
-    legend.append(named);
-    card.append(legend,
-      select('原始录像 · 动作与首尾二维码', '例如 exo' + number + '-task.mp4', 'video', 'videos'),
-      select('桌面标定板录像 · 板固定', '例如 exo' + number + '-table.mp4', 'table_video', 'videos'),
-      select('内参档案', '没有档案时选下方录像', 'profile', 'profiles'),
-      select('内参录像 · 从多个角度拍板', '例如 exo' + number + '-intrinsics.mp4', 'intrinsic_video', 'videos'),
-      document.createElement('output'));
-    card.addEventListener('change', render);
+    legend.textContent = 'EXO ' + number;
+    const table = document.createElement('div');
+    table.className = 'exo-table-fields';
+    table.append(select('固定板录像', 'table_video', 'videos', '选择桌面标定板录像'),
+      select('内参档案', 'profile', 'profiles', '选择 JSON 或另选内参录像'),
+      select('内参录像', 'intrinsic_video', 'videos', '选择多角度拍板录像'));
+    card.append(legend, select('原始录像', 'video', 'videos', '不使用'),
+      select('处理方式', 'mode'), table);
+    card.addEventListener('change', event => {
+      if (event.target.dataset.field === 'mode' && event.target.value === 'table') $('exoTableTools').open = true;
+      render();
+    });
     rows.append(card);
-    fillPicks();
-    render();
+    fill();
   }
 
-  async function refresh() {
+  function applySelection(state) {
+    saved = {cameras:state.cameras, square_mm:state.square_mm};
+    square.value = String(saved.square_mm);
+    const count = Math.max(2, ...saved.cameras.map(row => Number(row.role.split('-')[1])));
+    while (rows.children.length < count) appendCamera();
+    for (const card of rows.children) {
+      const row = saved.cameras.find(item => item.role === card.dataset.role);
+      for (const input of card.querySelectorAll('select')) {
+        const field = input.dataset.field;
+        input.value = field === 'mode' ? row && !row.time_only ? 'table' : 'clock' : row?.[field] || '';
+      }
+    }
+  }
+
+  async function refresh({reload = false} = {}) {
+    const id = session.value;
+    const request = ++version;
+    if (!id) {
+      catalog = {videos:[], profiles:[]};
+      loadedSession = '';
+      rows.replaceChildren();
+      appendCamera();
+      appendCamera();
+      render();
+      return;
+    }
+    const needsSelection = reload || loadedSession !== id;
+    if (needsSelection) {
+      loadedSession = '';
+      status.textContent = '';
+      if (rows.children.length > 2) {
+        rows.replaceChildren();
+        appendCamera();
+        appendCamera();
+      }
+    }
+    render();
     try {
-      const id = session.value;
-      const incoming = await api('/api/exo/options?' + new URLSearchParams({id}));
-      if (id !== session.value) return;
-      catalog = incoming;
+      const query = '?' + new URLSearchParams({id});
+      const [choices, state] = await Promise.all([
+        api('/api/exo/options' + query), needsSelection ? api('/api/intake' + query) : null
+      ]);
+      if (request !== version || session.value !== id) return;
+      catalog = choices;
       setCopyableText('exoVideoDirectory', catalog.video_directory);
       setCopyableText('exoProfileDirectory', catalog.profile_directory);
-      fillPicks();
+      fill();
+      if (state) applySelection(state);
+      loadedSession = id;
+    } catch (error) {
+      if (request === version) status.textContent = error.message;
+    } finally {
+      if (request === version) render();
+    }
+  }
+
+  async function pick(field) {
+    busy = true;
+    render();
+    status.textContent = '在电脑上选择要导入的档案。';
+    try {
+      await post('/api/intake/files', {session_id:session.value, field});
+      await refresh();
+      refreshQrVideos();
+      status.textContent = '在 EXO 卡片选择对应文件。';
+    } catch (error) {
+      status.textContent = error.message;
+    } finally {
+      busy = false;
       render();
-    } catch (error) { status.textContent = error.message; }
+    }
   }
 
   async function loadReport() {
     const id = session.value;
-    result.hidden = true;
-    cameraResults.hidden = true;
-    cameraResults.replaceChildren();
     if (!id) return;
+    const link = $('exoReport');
+    const results = $('exoCameraResults');
+    link.hidden = true;
+    results.hidden = true;
+    results.replaceChildren();
     try {
-      const query = '/api/exo/result?' + new URLSearchParams({id});
-      const report = await api(query);
-      if (session.value !== id) return;
+      const path = '/api/exo/result?' + new URLSearchParams({id});
+      const report = await api(path);
+      if (id !== session.value) return;
       if (report.status !== 'processed') {
         status.textContent = '这条会话还没有 EXO 处理结果。';
         return;
       }
-      result.href = capturePath(query);
-      result.hidden = false;
+      link.href = capturePath(path);
+      link.hidden = false;
       for (const camera of report.cameras) {
         const row = document.createElement('li');
-        row.textContent = [
-          camera.role.toUpperCase() + ' · ' + camera.original_name,
-          '桌面标定 RMS ' + camera.validation.holdout_rms_px.toFixed(2) + ' px',
-          'QR 残差中位数 ' + camera.clock.median_abs_residual_ms.toFixed(1) + ' ms',
-          '已估计偏移和漂移'
-        ].join(' ｜ ');
-        cameraResults.append(row);
+        const geometry = camera.validation.status === 'time_only' ? '仅对时'
+          : '桌面标定 RMS ' + camera.validation.holdout_rms_px.toFixed(2) + ' px';
+        row.textContent = [camera.role.toUpperCase(), camera.original_name, geometry,
+          'QR 残差 ' + camera.clock.median_abs_residual_ms.toFixed(1) + ' ms'].join(' · ');
+        results.append(row);
       }
-      cameraResults.hidden = false;
-      status.textContent = 'EXO 已处理。头戴桌面定位：' + report.ego.cameras.map((eye, index) =>
-        'CAM' + index + ' ' + eye.table_pose_frames + '/' + eye.frames).join(' ｜ ');
+      results.hidden = false;
+      status.textContent = 'EXO 对齐结果';
     } catch (error) {
-      if (session.value === id) status.textContent = error.message;
+      if (id === session.value) status.textContent = error.message;
     }
   }
 
-  function reportJob(job) {
-    if (!job || job.label !== 'EXO 标定与对齐') return;
-    busy = job.status === 'running';
-    if (job.session_id === session.value) {
-      if (job.status === 'complete') {
-        if (shownCompletion !== job.started) {
-          shownCompletion = job.started;
-          loadReport();
-          refresh();
-        }
-      } else {
-        status.textContent = job.message || job.progress || job.error || job.status;
-      }
-    }
+  save.onclick = async () => {
+    if (save.disabled) return;
+    const id = session.value;
+    const cameras = selectedPayload();
+    const square_mm = square.valueAsNumber;
+    busy = true;
     render();
-  }
-
-  add.addEventListener('click', appendCamera);
-  document.getElementById('refreshExo').addEventListener('click', refresh);
-  document.getElementById('readExoReport').addEventListener('click', loadReport);
-  document.querySelector('[data-calib-view="calibClocks"]').addEventListener('click', refresh);
-  square.addEventListener('input', render);
-  session.addEventListener('change', () => {
-    status.textContent = '';
-    render();
-    refresh();
-    loadReport();
-  });
-  start.addEventListener('click', async () => {
-    if (start.disabled) return;
-    const cameras = currentSetup().filter(row => row.enabled).map(row => row.payload);
     try {
-      busy = true;
-      render();
-      status.textContent = '正在提交 EXO 标定与对齐…';
-      const job = await post('/api/exo/process', {
-        session_id:session.value, cameras, square_mm:square.valueAsNumber
-      });
-      reportJob(job);
+      const result = await post('/api/intake', {session_id:id, cameras, square_mm});
+      if (id === session.value) {
+        applySelection(result);
+        status.textContent = 'EXO 选择已保存。';
+        refreshIntakeStatus();
+      }
     } catch (error) {
+      status.textContent = error.message;
+    } finally {
       busy = false;
       render();
-      status.textContent = error.message;
     }
-  });
-  window.renderExoJob = reportJob;
+  };
+
+  add.onclick = () => { appendCamera(); render(); };
+  videoPicker.onclick = () => pick('exo_video_files');
+  profilePicker.onclick = () => pick('exo_profile_files');
+  $('refreshExo').onclick = () => refresh();
+  $('readExoReport').onclick = loadReport;
+  square.oninput = render;
+  window.refreshIntakeExo = refresh;
   window.refreshExoReadiness = render;
+  window.intakeExoDirty = dirty;
+  window.renderExoJob = job => {
+    if (job.session_id === session.value && job.status === 'complete') loadReport();
+  };
   appendCamera();
   appendCamera();
-})()
+})();

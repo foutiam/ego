@@ -99,7 +99,10 @@ def phase(record):
 
 
 def camera_clock(folder, cam):
-    sources = ('qr-auto-sync.json',) if cam.startswith('exo') else ('exo-session.json', 'qr-sync.json', 'qr-auto-sync.json')
+    metadata = read_json(folder / 'metadata.json')
+    reviewed_intake = metadata.get('capture_intake_required') and metadata.get('contact_calibration')
+    sources = ('qr-auto-sync.json',) if cam.startswith('exo') or reviewed_intake else (
+        'exo-session.json', 'qr-sync.json', 'qr-auto-sync.json')
     name = ('EXO ' + cam[-1]) if cam.startswith('exo') else ('Ego CAM' + cam[-1])
     for filename in sources:
         path = folder / 'derived' / filename
@@ -135,7 +138,10 @@ def review_notes(folder, filename=REVIEW):
 
 def capture_camera_clock(folder):
     """Shared primary camera clock used by the registered-recording paths."""
-    for name in ('exo-session.json', 'qr-sync.json', 'qr-auto-sync.json'):
+    metadata = read_json(folder / 'metadata.json')
+    reviewed_intake = metadata.get('capture_intake_required') and metadata.get('contact_calibration')
+    names = ('qr-auto-sync.json',) if reviewed_intake else ('exo-session.json', 'qr-sync.json', 'qr-auto-sync.json')
+    for name in names:
         path = folder / 'derived' / name
         if not path.is_file():
             continue
@@ -326,6 +332,9 @@ def view(folder, part, cam):
     model, source = camera_clock(folder, cam) if primary else (None, None)
     if model and model['display_id'] != primary['display_id']:
         model, source = None, None
+    if metadata.get('capture_intake_required') and not (folder / 'derived/qr-auto-sync.json').is_file():
+        return {'available': False, 'message': '等待复核画面和相机时间轴', 'checks': checks,
+                'cameras': cameras, 'tactile_alignment': timing}
     frames = []
     for row in sorted((r for r in read_jsonl(index) if r['cam'] == cam and r['part'] == part),
                       key=lambda item: int(item['device_ns'])):

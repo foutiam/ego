@@ -164,7 +164,7 @@ class StationDevices(Devices):
         with self.lock:                       # RLock: super() re-acquires it
             if self.session:
                 raise ValueError('已有录制正在进行')
-            metadata = dict(metadata, auto_qr_sync=True, capture_sources={
+            metadata = dict(metadata, auto_qr_sync=True, capture_intake_required=True, capture_sources={
                 'stereo': dict(port=self.state['camera'].get('port'), camera_serial=self.identity.get('serial'),
                                streams={'cam0': '/0', 'cam1': '/1'}),
                 'glove': dict(port=self.state['glove'].get('port')),
