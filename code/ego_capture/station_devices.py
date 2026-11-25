@@ -26,7 +26,11 @@ No conversion, smoothing or re-counting of raw data is performed anywhere.
 """
 from __future__ import annotations
 
+import json
 import time
+
+from .live_exo import LiveExo
+from visuotactile.storage import dump_json
 
 from visuotactile.devices import Devices  # noqa: E402  (read-only reuse source)
 
@@ -44,6 +48,87 @@ class StationDevices(Devices):
         # kind -> {'mono_ns', 'frames', 'bytes', 'invalid_or_partial'} captured
         # at record start; cleared when the recording stops.
         self.count_basis = {}
+        self.exo = LiveExo()
+        self.sequence_file = self.root / 'capture-sequence.json'
+        try:
+            self.sequence = int(json.loads(self.sequence_file.read_text(encoding='utf-8'))['last_recording'])
+        except (OSError, ValueError, TypeError, KeyError):
+            self.sequence = 0
+
+    @property
+    def next_recording_name(self):
+        return f'录制 {self.sequence + 1:03d}'
+
+    def start_quick_recording(self, name='', *, enforce_recording_limits=True, contact_calibration=False):
+        if type(contact_calibration) is not bool:
+            raise ValueError('校准设置格式无效')
+        if not isinstance(name, str) or len(name) > 80 or any(ord(c) < 32 for c in name):
+            raise ValueError('录制名称请使用 80 字以内的单行文字')
+        with self.lock:
+            if self.session:
+                raise ValueError('已有录制正在进行')
+            blocker = self.recording_blocker()
+            if blocker:
+                raise ValueError(blocker)
+            number = self.sequence + 1
+            # Reserve before opening streams, so a reset or deletion cannot reuse an ID.
+            dump_json(self.sequence_file, {'last_recording': number})
+            self.sequence = number
+            metadata = dict(name=name.strip() or f'录制 {number:03d}',
+                            capture_number=number, object_id='unassigned', scene_id='scene_001',
+                            material='unknown', split='unassigned', capture_mode='quick')
+            if contact_calibration:
+                metadata['contact_calibration'] = dict(task_start_s=None, task_end_s=None)
+            return self.start_recording(metadata, enforce_recording_limits=enforce_recording_limits)
+
+    def contact_phase(self, session=None):
+        from .contact_calibration import phase
+        session = self.session if session is None else session
+        record = session.metadata.get('contact_calibration') if session else None
+        return phase(record) if record else None
+
+    def mark_task_boundary(self, session_id, action):
+        with self.lock:
+            s = self.session
+            if not s or s.id != session_id or not s.metadata.get('contact_calibration'):
+                raise ValueError('当前录制没有启用任务前后校准')
+            phase = self.contact_phase(s)
+            if (phase, action) not in (('before', 'start'), ('task', 'end')):
+                if (phase, action) in (('task', 'start'), ('after', 'end')):
+                    return {'phase': phase}
+                raise ValueError('当前录制步骤已变更，请核对后重试')
+            timestamp = (time.monotonic_ns() - s.start_mono_ns) / 1e9
+            updated = dict(s.metadata['contact_calibration'], **{f'task_{action}_s': timestamp})
+            metadata = dict(s.metadata, contact_calibration=updated)
+            dump_json(s.path / 'metadata.json', metadata)
+            s.metadata = metadata
+            s.event('contact_calibration_task_' + action, boundary_s=timestamp)
+            return {'phase': self.contact_phase(s)}
+
+    def recording_blocker(self):
+        with self.lock:
+            reason = super().recording_blocker()
+            if reason:
+                return reason
+            for role, feed in self.exo.state().items():
+                if not feed['ready']:
+                    return f"{role.upper()} 暂无画面，请重选相机来源或停用该路。"
+
+    def check_recording_limits(self):
+        with self.lock:
+            super().check_recording_limits()
+            if not self.session:
+                return
+            stopped = [role.upper() for role, feed in self.exo.state().items() if not feed['ready'] or feed['error']]
+            if stopped:
+                self.stop_recording('EXO 视频流中断：' + '、'.join(stopped))
+
+    def close(self):
+        try:
+            super().close()
+        finally:
+            with self.lock:
+                self.exo.close()
 
     # -- baselines ---------------------------------------------------------
     def _capture_basis(self):
@@ -77,6 +162,14 @@ class StationDevices(Devices):
     # -- recording lifecycle ----------------------------------------------
     def start_recording(self, metadata, *, enforce_recording_limits=True):
         with self.lock:                       # RLock: super() re-acquires it
+            if self.session:
+                raise ValueError('已有录制正在进行')
+            metadata = dict(metadata, auto_qr_sync=True, capture_sources={
+                'stereo': dict(port=self.state['camera'].get('port'), camera_serial=self.identity.get('serial'),
+                               streams={'cam0': '/0', 'cam1': '/1'}),
+                'glove': dict(port=self.state['glove'].get('port')),
+                'exo': {role: dict(feed.source) for role, feed in self.exo.feeds.items()},
+            })
             from .guided_capture import PROFILES, object_profile
             if metadata.get('object_id') in PROFILES:
                 profile = object_profile(metadata['object_id'])
@@ -89,6 +182,12 @@ class StationDevices(Devices):
                     self.session.config = dict(self.session.config,
                                                max_session_seconds=MAX_SECONDS,
                                                max_session_bytes=MAX_BYTES)
+                try:
+                    self.exo.start(self.session)
+                    self.session.external_bytes = self.exo.bytes
+                except Exception:
+                    self.stop_recording('无法创建 EXO 录制文件')
+                    raise
                 return identity
             except Exception:
                 self.count_basis = {}
@@ -99,8 +198,11 @@ class StationDevices(Devices):
             if not self.session:
                 return None
             s = self.session
+            if self.contact_phase(s) == 'task':
+                s.metadata['contact_calibration']['task_end_s'] = (time.monotonic_ns() - s.start_mono_ns) / 1e9
             from .guided_capture import close_manifest
             close_manifest(s, reason)
+            self.exo.finish(s)
             self.session = None
             start_mono = self.count_basis.get('camera', {}).get('mono_ns',
                                                                 s.start_mono_ns)
@@ -127,4 +229,5 @@ class StationDevices(Devices):
                 for kind in ('camera', 'glove')}
             out['recording']['counting_note'] = COUNTING_NOTE
             out['recording']['limits_enabled'] = self.session.enforce_recording_limits
+            out['recording']['contact_phase'] = self.contact_phase()
         return out

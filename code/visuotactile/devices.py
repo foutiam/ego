@@ -127,6 +127,8 @@ class Devices:
         # recorded and then dropped here, so the stereo baseline the device states
         # never reached the calibration page.
         self.transforms={}
+        self.serial_generation={'camera':0,'glove':0}
+        self.operator_serial=set()
         self.contact=False;self.contact_count=0;self.touch_history=collections.deque(maxlen=600)
         # Monotonic per-sample sequence numbers aligned with touch_history, so
         # /api/live/touch can drain samples newer than a client cursor without
@@ -299,28 +301,82 @@ class Devices:
     def available_ports(self):
         return [{'port':p.device,'description':p.description,'vid':p.vid,'pid':p.pid} for p in list_ports.comports()]
 
+    def bind_serial(self, kind, port):
+        if kind not in self.serial_generation:
+            raise ValueError('未知串口设备')
+        with self.lock:
+            if self.session:
+                raise ValueError('录制中不能切换来源')
+            key = kind + '_port_override'
+            if port == (self.config.get(key) or ''):
+                return
+            if port and port not in {item['port'] for item in self.available_ports()}:
+                raise ValueError('串口不在设备列表，请重新扫描')
+            other = 'glove' if kind == 'camera' else 'camera'
+            if port and port in (self.config.get(other+'_port_override'), self.state[other].get('port')):
+                raise ValueError('该串口已分配给另一设备')
+            self.config[key] = port or None
+            if port:
+                self.operator_serial.add(kind)
+            else:
+                self.operator_serial.discard(kind)
+            self.serial_generation[kind] += 1
+            self.state[kind] = dict(connected=False, message='正在切换串口', frames=0)
+            if kind == 'camera':
+                self.latest[:] = [None,None]
+                self.previews[:] = [None,None]
+                self.last_preview[:] = [0.,0.]
+                self.last_pose_ns = -1
+                self.last_pose_preview = 0.
+                self.identity, self.channels, self.calibration, self.transforms = {}, {}, {}, {}
+                self.clock_command_id = None
+                self.state['pose'] = dict(detected=False, model_ready=self.state['pose'].get('model_ready'),
+                                          message='等待新相机画面')
+                with self.preview_times_lock:
+                    for stamps in self.preview_times:
+                        stamps.clear()
+            else:
+                self.baseline = self.pressure_baseline = self.pressure_baseline_source = None
+                self.baseline_until = 0
+                self.baseline_samples.clear()
+                self.pressure_baseline_samples.clear()
+                self.touch_history.clear()
+                self.touch_seq.clear()
+                self.contact, self.contact_count = False, 0
+                self.last_glove_ui = 0.
+
     def _find_port(self, kind):
         override=self.config.get(kind+'_port_override')
         ports=list(list_ports.comports())
-        if override:return next((p for p in ports if p.device==override),None)
-        found=[p for p in ports if p.vid==self.config[kind+'_vid'] and p.pid==self.config[kind+'_pid']]
-        if len(found)>1:raise ValueError('发现多个同类设备，请在高级设置中指定串口')
+        if override:
+            return next((p for p in ports if p.device==override),None)
+        other='glove' if kind=='camera' else 'camera'
+        reserved=self.config.get(other+'_port_override')
+        found=[p for p in ports if p.device!=reserved and
+               p.vid==self.config[kind+'_vid'] and p.pid==self.config[kind+'_pid']]
+        if len(found)>1:raise ValueError('发现多个匹配设备，请在实时录制中手动选择串口')
         return found[0] if found else None
 
     def _reader(self, kind):
         while not self.stop.is_set():
             if self.state['mode']!='live':self.stop.wait(.5);continue
             port=None
+            link=None
+            with self.lock:generation=self.serial_generation[kind]
             try:
                 port=self._find_port(kind)
                 if not port:
-                    with self.lock:self.state[kind].update(connected=False,message='设备未连接')
+                    with self.lock:
+                        if generation==self.serial_generation[kind]:
+                            selected=self.config.get(kind+'_port_override')
+                            self.state[kind].update(connected=False,port=None,message=f'{selected} 未连接' if selected else '设备未连接')
                     self.stop.wait(2);continue
                 parser=VisioDecoder() if kind=='camera' else GloveDecoder()
                 link=serial.Serial(port=None,baudrate=115200,timeout=.03,write_timeout=.5)
                 link.dtr=kind=='camera';link.rts=kind=='camera';link.port=port.device;link.open()
-                self.ports[kind]=link
                 with self.lock:
+                    if generation!=self.serial_generation[kind]:continue
+                    self.ports[kind]=link
                     # VID 0483 / PID 5739 only identifies a generic STM32 CDC device:
                     # brand, model, channel table and IMU presence stay unconfirmed.
                     self.state[kind].update(connected=True,port=port.device,vid=port.vid,pid=port.pid,
@@ -333,14 +389,15 @@ class Devices:
                             except queue.Empty:break
                         q.put(None)
                 first_received=None;total=0;clock_stage=0;command_base=int(time.time())%2_000_000_000
-                while not self.stop.is_set() and self.state['mode']=='live':
+                while not self.stop.is_set() and self.state['mode']=='live' and generation==self.serial_generation[kind]:
                     data=link.read(min(max(link.in_waiting,1),65536))
                     if not data:continue
                     host=time.time_ns();mono=time.monotonic_ns();first_received=first_received or mono;total+=len(data)
                     with self.lock:
+                        if generation!=self.serial_generation[kind]:break
                         if self.session:self.session.raw(kind,data,host,mono)
                         self.state[kind].update(last_data_mono_ns=mono,bytes=total,message='正在接收')
-                    self.consume(kind,parser,data,host,mono)
+                    self.consume(kind,parser,data,host,mono,generation=generation)
                     if kind=='camera' and parser.identity.get('name'):
                         elapsed=(mono-first_received)/1e9
                         if clock_stage==0 and elapsed>1:
@@ -350,6 +407,7 @@ class Devices:
                             link.write(command(parser.identity['name'],21,self.clock_command_id));clock_stage=2
                             with self.lock:self.state['camera']['clock_status']='校时命令已发送，等待回执'
                     with self.lock:
+                        if generation!=self.serial_generation[kind]:break
                         self.state[kind]['frames']=parser.good;self.state[kind]['invalid_or_partial']=parser.bad
                         self.state[kind]['rate_hz']=round(parser.good/max((mono-first_received)/1e9,.1),1)
                         if self.session:
@@ -357,25 +415,31 @@ class Devices:
                             if why:self.stop_recording(why)
             except Exception as exc:
                 with self.lock:
-                    self.state[kind].update(connected=False,message=f'连接中断：{exc}')
-                    if self.session:self.stop_recording(f'{kind}连接中断')
-                self.stop.wait(2)
+                    changed = generation!=self.serial_generation[kind]
+                    if not changed:
+                        self.state[kind].update(connected=False,message=f'连接中断：{exc}')
+                        if self.session:self.stop_recording(f'{kind}连接中断')
+                if not changed:self.stop.wait(2)
             finally:
-                link=self.ports.pop(kind,None)
+                if self.ports.get(kind) is link:self.ports.pop(kind,None)
                 if link:
                     try:link.close()
                     except Exception:pass
 
-    def consume(self, kind, parser, data, host, mono):
+    def consume(self, kind, parser, data, host, mono, generation=None):
+        if generation is None:  # Also used by legacy replay and probe paths.
+            generation=self.serial_generation[kind]
         if kind=='glove':
-            for frame,offset in parser.feed(data):self._glove_frame(frame,host,mono)
+            for frame,offset in parser.feed(data):self._glove_frame(frame,host,mono,generation=generation)
             return
         for msg in parser.feed(data,host,mono):
+            if generation!=self.serial_generation[kind]:break
             if msg.stream_id==1:
-                expected=self.config.get('camera_serial')
+                expected=self.config.get('camera_serial') if kind not in self.operator_serial else None
                 if expected and parser.identity.get('serial') and parser.identity['serial']!=expected:
                     raise ValueError('发现的相机序列号与配置不一致，请核对连接设备')
                 with self.lock:
+                    if generation!=self.serial_generation[kind]:break
                     self.identity=parser.identity
                     self.channels=parser.channels.copy()
                     self.state['camera']['identity']=parser.identity
@@ -383,15 +447,20 @@ class Devices:
             c=parser.channels.get(msg.stream_id)
             if not c:continue
             with self.lock:
+                if generation!=self.serial_generation[kind]:break
                 if self.session:self.session.message(msg,c)
             if c['schema']=='foxglove.CameraCalibration':
-                try:self.calibration[c['topic']]=camera_calibration(msg.payload)
+                try:
+                    with self.lock:
+                        if generation==self.serial_generation[kind]:self.calibration[c['topic']]=camera_calibration(msg.payload)
                 except (ValueError,TypeError):pass
             if c['schema']=='foxglove.FrameTransform':
                 # Device-reported relative pose (cam0<-cam1, cam0<-imu0). Kept as
                 # received; interpretation and verification status live in
                 # ego_capture.camera_calibration.
-                try:self.transforms[c['topic']]=frame_transform(msg.payload)
+                try:
+                    with self.lock:
+                        if generation==self.serial_generation[kind]:self.transforms[c['topic']]=frame_transform(msg.payload)
                 except (ValueError,TypeError):pass
             if c['schema'].endswith('CommandResult'):
                 p=protobuf(msg.payload)
@@ -399,7 +468,7 @@ class Devices:
                     with self.lock:self.state['camera']['clock_status']='日期校时成功；设备间同步仍需复核' if first(p,2) else '相机拒绝校时'
             if c['schema']=='foxglove.CompressedVideo':
                 p=protobuf(msg.payload);topic=c['topic'];cam=0 if topic.endswith('/0') else 1
-                try:self.video_queues[cam].put_nowait((first(p,3,b''),msg))
+                try:self.video_queues[cam].put_nowait((first(p,3,b''),msg,generation))
                 except queue.Full:
                     with self.lock:self.state['camera']['preview_queue_drops']=self.state['camera'].get('preview_queue_drops',0)+1
             elif c['topic'].endswith('/quat'):
@@ -422,12 +491,14 @@ class Devices:
             try:item=self.video_queues[cam].get(timeout=.5)
             except queue.Empty:continue
             if item is None:decoder=VideoDecoder(self.config.get('video_decoder','sw'));continue
-            data,msg=item
+            data,msg,generation=item
+            if generation!=self.serial_generation['camera']:continue
             for frame in decoder.decode(data,msg.device_ns):
                 rgb=frame.to_ndarray(format='rgb24');now=time.monotonic()
                 entry={'rgb':rgb,'device_ns':frame.pts if frame.pts is not None else msg.device_ns,
-                       'host_ns':msg.host_ns,'host_mono_ns':msg.host_mono_ns,'sequence':msg.sequence,'arrived':now}
+                       'host_ns':msg.host_ns,'host_mono_ns':msg.host_mono_ns,'sequence':msg.sequence,'arrived':now,'generation':generation}
                 with self.lock:
+                    if generation!=self.serial_generation['camera']:break
                     self.latest[cam]=entry
                     self.state['camera'][f'cam{cam}_shape']=[rgb.shape[1],rgb.shape[0]]
                 due=now-self.last_preview[cam]>1/self.config['preview_fps']
@@ -438,9 +509,11 @@ class Devices:
                     due=due and now-self.last_pose_preview>2.0
                 if due:
                     encoded=jpeg_preview(rgb)
-                    self._note_preview(cam)
-                    with self.lock:self.previews[cam]=encoded;self.state['camera'][f'cam{cam}_shape']=[rgb.shape[1],rgb.shape[0]]
-                    self.last_preview[cam]=now
+                    with self.lock:
+                        if generation!=self.serial_generation['camera']:break
+                        self._note_preview(cam)
+                        self.previews[cam]=encoded
+                        self.last_preview[cam]=now
 
     def _pose(self):
         detector=None
@@ -454,7 +527,7 @@ class Devices:
                 with self.lock:entry=self.latest[0]
                 if not entry or entry['device_ns']==self.last_pose_ns or time.monotonic()-entry['arrived']>2:continue
                 pose=detector.infer(entry['rgb'],entry['device_ns'],entry['host_ns'],entry['host_mono_ns'])
-                self.last_pose_ns=entry['device_ns'];pose['model_ready']=True
+                pose['model_ready']=True
                 if pose['detected']:
                     pose['message'] = f"{(pose.get('hand') or '手').upper()} 视觉姿态已识别"
                     if pose.get('gloved_fallback'):
@@ -463,8 +536,11 @@ class Devices:
                     pose['message'] = ('未检测到手部骨架（已尝试ROI与低阈值复检）；戴手套会显著降低MediaPipe稳定性，'
                                        '可调整照明、视角、距离，或短暂露出指尖帮助定位')
                 preview=jpeg_preview(entry['rgb'],pose)
-                self.last_pose_preview=time.monotonic();self._note_preview(0)
                 with self.lock:
+                    if entry.get('generation')!=self.serial_generation['camera']:continue
+                    self.last_pose_ns=entry['device_ns']
+                    self.last_pose_preview=time.monotonic()
+                    self._note_preview(0)
                     self.state['pose']=pose;self.previews[0]=preview
                     if self.session:self.session.pose(pose)
         except Exception as exc:
@@ -493,10 +569,11 @@ class Devices:
             sites=[{'id':'all','finger':'','role':'touch','bytes':list(offsets),'idx':list(range(len(offsets)))}]
         return sites
 
-    def _glove_frame(self, frame, host, mono):
+    def _glove_frame(self, frame, host, mono, generation=None):
         decoded=decode_frame(frame)
         emf=decoded['emf']
         pressure=decoded['pressure']
+        if generation is not None and generation!=self.serial_generation['glove']:return
         self._push_retarget(emf, time.time_ns()/1e9)
         values=np.frombuffer(frame,dtype=np.uint8)[self.config['contact_byte_offsets']].astype(float)
         with self.probe_lock:
@@ -507,6 +584,7 @@ class Devices:
                     probe['raw_frames'].append(bytes(frame))
         now=time.monotonic()
         with self.lock:
+            if generation is not None and generation!=self.serial_generation['glove']:return
             if self.baseline_until:
                 self.baseline_samples.append(values)
                 # The grid rides in the same window: one operator action ("keep the glove still for
@@ -599,19 +677,34 @@ class Devices:
             self.baseline_samples=[];self.pressure_baseline_samples=[];self.baseline_until=time.monotonic()+3;self.contact=False
             self.state['notice']='开始记录基线：请保持手套不接触物体，静置3秒'
 
+    def recording_blocker(self):
+        """Use the same source-readiness check in the UI and at record start."""
+        with self.lock:
+            if self.state['mode'] != 'live':
+                return '请先返回实时模式'
+            for kind, label in (('camera','头戴双目'), ('glove','左手手套')):
+                source = self.state[kind]
+                if not source['connected']:
+                    return f'{label}：{source.get("message") or "未连接"}。可在预览下方重选串口。'
+                if (time.monotonic_ns()-source.get('last_data_mono_ns',0))/1e9 > 3:
+                    return f'{label}还没有实时数据。请检查设备连接。'
+                if source.get('frames',0)<1:
+                    return f'{label}尚未收到有效数据帧。'
+            if any(not entry or time.monotonic()-entry['arrived']>3 for entry in self.latest):
+                return '请等待两路相机都显示实时画面'
+            return None
+
     def start_recording(self, metadata, *, enforce_recording_limits=True):
         with self.lock:
             if self.session:raise ValueError('已有录制正在进行')
-            if self.state['mode']!='live':raise ValueError('回放模式不能当作真实设备采集')
-            for kind in ('camera','glove'):
-                s=self.state[kind]
-                if not s['connected'] or (time.monotonic_ns()-s.get('last_data_mono_ns',0))/1e9>3:raise ValueError(f'{kind}未连接或数据已停止')
-                if s.get('frames',0)<1:raise ValueError(f'{kind}尚未收到完整有效数据帧')
-            if any(not entry or time.monotonic()-entry['arrived']>3 for entry in self.latest):raise ValueError('请等待两路相机都出现实时画面后再录制')
+            blocker = self.recording_blocker()
+            if blocker:
+                raise ValueError(blocker)
             metadata['object_id']=safe_id(metadata.get('object_id',''))
             metadata['scene_id']=safe_id(metadata.get('scene_id','scene_001'))
             split=metadata.get('split','train')
-            if split not in ('train','val','test'):raise ValueError('Invalid split')
+            if split not in ('train','val','test') and not (split=='unassigned' and metadata.get('capture_mode')=='quick'):
+                raise ValueError('Invalid split')
             # One physical object must keep the same split across sessions.
             for p in (self.root/'sessions').glob('*/metadata.json'):
                 old=json.loads(p.read_text('utf-8'))
@@ -666,7 +759,7 @@ class Devices:
         g=self.state['glove']
         return {'cursor':newest,'samples':out,
                 'window_reset':bool(cursor>0 and seqs and seqs[0]>cursor),
-                'glove_stale':bool(g.get('stale',False)),
+                'glove_stale':not g.get('connected') or time.monotonic_ns()-g.get('last_data_mono_ns',0)>3_000_000_000,
                 'glove':{'values':g.get('values'),'offsets':g.get('offsets'),
                          'score':g.get('score'),
                          'contact_candidate':g.get('contact_candidate'),
@@ -687,7 +780,7 @@ class Devices:
     def snapshot(self):
         with self.lock:
             out=json.loads(json.dumps(self.state));out['recording']=None
-            if self.session:out['recording']={'session_id':self.session.id,'seconds':(time.monotonic_ns()-self.session.start_mono_ns)/1e9,'bytes':self.session.byte_count}
+            if self.session:out['recording']={'session_id':self.session.id,'name':self.session.metadata.get('name'),'seconds':(time.monotonic_ns()-self.session.start_mono_ns)/1e9,'bytes':self.session.byte_count}
             out['touch_history']=list(self.touch_history)[-200:];out['server_mono_ns']=time.monotonic_ns()
             # The resting grid is the page's zero reference for the 3D taxel layer, so it travels
             # with the state (2 s poll) instead of riding the ~20 Hz touch poll, and it is None --

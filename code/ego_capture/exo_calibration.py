@@ -299,9 +299,10 @@ def _ego_timeline(folder, destination, clocks, start_host_s, square_mm):
     return counts
 
 
-def process_exo(folder, rows, video_root, profile_root, minimum_free_bytes, progress, *, measured_square_mm=25):
+def process_exo(folder, rows, video_root, profile_root, minimum_free_bytes, progress, *, measured_square_mm=25, video_catalog=None):
     """Publish a portable EXO snapshot only after calibration and synchronization pass."""
-    videos, calibration_profiles = exo_catalog(video_root), profiles(profile_root)
+    videos = exo_catalog(video_root) if video_catalog is None else video_catalog
+    calibration_profiles = profiles(profile_root)
     rows = list(_checked_setup(rows, videos, calibration_profiles))
     sources = list(dict.fromkeys(videos[row[key]] for row in rows
                                 for key in ('video', 'table_video', 'intrinsic_video') if row.get(key)))

@@ -84,6 +84,11 @@
    const events=this.events();
    const reviewed=events.filter(event=>(this.review[event.id]?.decision??'pending')!=='pending').length;
    const scope=this.range?'当前区间':'整条录制';
+   if(report.timing?.tactile_alignment?.status==='applied'){
+    this.detail.textContent='触觉已按视触校准对齐 · 点击时间轴定位画面';
+   }else{
+    this.detail.textContent=this.compact?'点击时间轴或事件定位画面 · 按主机接收时间关联':'点击时间轴定位双目 · 按主机接收时间关联';
+   }
    this.status.textContent=`${scope} · 当前筛选 ${events.length} 条候选 · 已复核 ${reviewed} 条`
     +(report.camera_review_frames?'':'。整理完成后可关联复查画面')
     +(report.baseline_source==='recorded_rest_grid'?'':'。触觉基线取自录制初始窗口，静置状态待验证')
@@ -116,7 +121,7 @@
     if(event.id===activeEvent&&activeDecision===undefined)nextFocus=title;
     const region=regions[event.region]||event.region,status=decisions[this.review[event.id]?.decision||'pending'];
     const frames='触觉帧 '+(event.tactile_frame_index+1)+(event.paired_frame_index==null?' · 附近无复查相机帧':
-      ' · 复查帧 '+(event.paired_frame_index+1)+'（主机时间差 '+event.camera_delta_ms+'ms）');
+      ' · 复查帧 '+(event.paired_frame_index+1)+'（'+(event.camera_association==='manual_tactile_alignment'?'校准后时间差 ':'主机时间差 ')+event.camera_delta_ms+' ms）');
     const info=node('span',this.compact?region+' · '+status:region+' · '+frames+' · '+status,row);
     if(this.compact)info.title=frames;
     if(this.readOnly)continue;

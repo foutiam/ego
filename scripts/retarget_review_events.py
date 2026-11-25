@@ -15,6 +15,7 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'code'))
+from ego_capture.contact_calibration import REVIEW, map_touch_time, move_between_camera_axes, review_camera_axes, timing_for_recording
 from transparent_capture.contact_events import DECLARED_PARAMETERS
 from transparent_capture.glove_stream import pressure_series
 
@@ -40,6 +41,8 @@ def write(path, value):
 def fingerprint(directory):
     names = ['metadata.json', 'glove.bin', 'glove-reads.csv', 'calibration.json',
              'derived/paired_frames.jsonl']
+    if (directory / REVIEW).is_file():
+        names += [REVIEW, 'derived/exo-session.json', 'derived/qr-sync.json', 'derived/qr-auto-sync.json']
     facts = {name: [p.stat().st_size, p.stat().st_mtime_ns] if (p := directory / name).exists()
              else None for name in names}
     facts['algorithm_sha256'] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
@@ -111,6 +114,18 @@ def compute(directory, progress=lambda *args: None, *, base=BASE):
     origin = meta.get('start_mono_ns')
     times = [round((stamp-origin)/1e9, 6) if stamp is not None and origin is not None else None
              for stamp in series.host_mono_ns]
+    raw_times = times
+    timing, camera, _ = timing_for_recording(directory, meta) if meta.get('contact_calibration') else ({}, None, None)
+    applied = timing.get('status') == 'applied'
+    host_axis, camera_axis = review_camera_axes(directory, meta, camera if applied else None)
+    if applied:
+        lo, hi = timing['taskRangeS']
+        left, right = move_between_camera_axes(np.asarray([lo, hi]), host_axis, camera_axis)
+        times = [map_touch_time(stamp, timing) if stamp is not None and lo <= stamp < hi else None
+                 for stamp in raw_times]
+        times = [float(stamp) if stamp is not None and left <= stamp < right else None for stamp in times]
+    def review_time(stamp):
+        return None if stamp is None else float(move_between_camera_axes(stamp, camera_axis, host_axis))
     valid = [stamp is not None and (saved_baseline or i >= window) for i, stamp in enumerate(times)]
     left = set(series.hand_side) == {1}
     regions = [r for r in read(LAYOUT)['regions'] if r.get('role') == 'touch'
@@ -128,7 +143,8 @@ def compute(directory, progress=lambda *args: None, *, base=BASE):
     progress('detect', 1, 3)
     pairs_file = directory / 'derived/paired_frames.jsonl'
     pairs = [json.loads(line) for line in pairs_file.read_text(encoding='utf-8').splitlines() if line.strip()] if pairs_file.exists() else []
-    pair_times = np.array([p['t_s'] for p in pairs])
+    pair_host_times = np.array([p['t_s'] for p in pairs])
+    pair_times = move_between_camera_axes(pair_host_times, host_axis, camera_axis)
     events, spans = [], []
 
     def event(kind, group, boundary, censored=False):
@@ -137,14 +153,18 @@ def compute(directory, progress=lambda *args: None, *, base=BASE):
         nearest_delta = round(float(pair_times[nearest]-stamp)*1000, 3) if nearest is not None else None
         if nearest_delta is not None and abs(nearest_delta) > MAX_REVIEW_FRAME_DISTANCE_S*1000:
             nearest = None
-        item = dict(id=f'{kind}:{group}:{i}', kind=kind, region=group, t_s=stamp,
+        association = 'manual_tactile_alignment' if applied else 'nearest_host_arrival_unverified_latency'
+        item = dict(id=f'{kind}:{group}:{i}', kind=kind, region=group, t_s=review_time(stamp),
                     tactile_frame_index=i, stream_sequence=int(series.stream_sequence[i]),
-                    available_at_s=times[boundary['available_index']], onset_bracket_s=boundary['bracket_s'],
+                    available_at_s=review_time(times[boundary['available_index']]),
+                    onset_bracket_s=[review_time(t) for t in boundary['bracket_s']],
                     left_censored=censored, evidence_class='threshold_response_candidate',
-                    paired_frame_index=nearest, camera_association='nearest_host_arrival_unverified_latency',
-                    camera_t_s=float(pair_times[nearest]) if nearest is not None else None,
+                    paired_frame_index=nearest, camera_association=association,
+                    camera_t_s=float(pair_host_times[nearest]) if nearest is not None else None,
                     camera_delta_ms=nearest_delta if nearest is not None else None,
                     nearest_camera_delta_ms=nearest_delta)
+        if applied:
+            item.update(raw_t_s=raw_times[i], aligned_t_s=stamp)
         if nearest is not None:
             item['image'], item['image1'] = pairs[nearest]['image'], pairs[nearest]['image1']
         events.append(item)
@@ -159,7 +179,7 @@ def compute(directory, progress=lambda *args: None, *, base=BASE):
             final = event(off, group, interval['end']) if interval['end'] else None
             spans.append(dict(region=group, kind=on, start_s=first['t_s'],
                               end_s=final['t_s'] if final else None,
-                              last_observed_s=times[interval['last']], end_reason=interval['end_reason'],
+                              last_observed_s=review_time(times[interval['last']]), end_reason=interval['end_reason'],
                               left_censored=censored))
 
     detect('any_taxel', all_score, 'contact_on', 'contact_off')
@@ -171,8 +191,9 @@ def compute(directory, progress=lambda *args: None, *, base=BASE):
         detect('thumb_and_other_finger', opposition.astype(int), 'grasp_candidate', 'release_candidate', MIN_HOLD_S)
     events.sort(key=lambda x: (x['t_s'] if x['t_s'] is not None else float('inf'), x['id']))
     stride = max(1, len(times)//1800)
-    samples = [dict(t_s=times[i], peak=float(all_score[i]), known=valid[i],
-                    fingers={k: float(v[i]) for k,v in signals.items()}) for i in range(0, len(times), stride)]
+    samples = [dict(t_s=review_time(times[i]), peak=float(all_score[i]), known=valid[i],
+                    fingers={k: float(v[i]) for k,v in signals.items()}) for i in range(0, len(times), stride)
+               if not applied or times[i] is not None]
     report = dict(schema=VERSION, session=directory.name, source_revision=source_revision,
                   duration_s=meta.get('duration_s'), parameters=dict(DECLARED_PARAMETERS,
                   max_gap_s=MAX_GAP_S, grasp_cocontact_hold_s=MIN_HOLD_S,
@@ -181,7 +202,8 @@ def compute(directory, progress=lambda *args: None, *, base=BASE):
                   hand_side_values=sorted(set(int(x) for x in series.hand_side)),
                   anatomical_mapping_available=left,
                   baseline_source='recorded_rest_grid' if saved_baseline else 'initial_window_minimum_unverified_rest',
-                  timing=dict(basis='host_monotonic_arrival_minus_session_start', exposure_offset_s=None,
+                  timing=dict(basis='manual_tactile_alignment' if applied else 'host_monotonic_arrival_minus_session_start',
+                              tactile_alignment=timing, exposure_offset_s=None,
                               cross_sensor_uncertainty_ms=None, qualified_for_precise_training=False),
                   inference=dict(grasp='thumb and another mapped touch region active together; no object motion proof',
                                  release='end of sustained co-contact; not proof of physical release'),
@@ -189,7 +211,8 @@ def compute(directory, progress=lambda *args: None, *, base=BASE):
                   intervals=spans, summary={k:sum(e['kind']==k for e in events) for k in
                   ['contact_on','contact_off','region_on','region_off','grasp_candidate','release_candidate']},
                   limitations=['Baseline does not establish current wearing calibration.',
-                               'Camera association uses host arrival; exposure latency is unknown.',
+                               ('Touch timing is estimated between two reviewed contact anchors.' if applied
+                                else 'Camera association uses host arrival; exposure latency is unknown.'),
                                'Initial contact, missing data and ongoing contact at the end are censored.',
                                'Human decisions do not calibrate timing or establish robot training labels.'])
     if fingerprint(directory) != source_revision:

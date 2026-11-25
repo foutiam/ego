@@ -2,6 +2,7 @@ from __future__ import annotations
 import csv
 import datetime as dt
 import json
+import math
 import re
 import shutil
 import threading
@@ -24,12 +25,36 @@ def safe_id(text):
     return text
 
 
+def recorded_task_range(metadata):
+    duration = metadata['duration_s']
+    calibration = metadata.get('contact_calibration')
+    if not calibration:
+        return 0., duration
+    start, end = calibration.get('task_start_s'), calibration.get('task_end_s')
+    if all(type(t) in (float, int) and math.isfinite(t) for t in (start, end)) and 0 <= start < end <= duration:
+        return start, end
+    return None
+
+
+def contact_calibration_windows(metadata):
+    if not metadata.get('contact_calibration'):
+        return {}
+    duration = metadata['duration_s']
+    task = recorded_task_range(metadata)
+    start, end = task if task else (duration, duration)
+    windows = {'before': (0., start)}
+    if duration > end:
+        windows['after'] = (end, duration)
+    return windows
+
+
 class Session:
     def __init__(self, root, metadata, config, *, enforce_recording_limits=True):
         self.enforce_recording_limits = enforce_recording_limits
         if enforce_recording_limits and shutil.disk_usage(root.parent).free < config['minimum_free_bytes']:raise ValueError('录制目录可用空间低于工作站设置')
         self.id=dt.datetime.now().strftime('%Y%m%d-%H%M%S')+'-'+uuid.uuid4().hex[:6]
         self.path=root/'sessions'/self.id;self.path.mkdir(parents=True)
+        self.external_bytes = None
         self.config=config;self.lock=threading.RLock();self.closed=False;self.byte_count=0
         self.start_ns=time.time_ns();self.start_mono_ns=time.monotonic_ns()
         self.metadata=dict(metadata,session_id=self.id,created_at=dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -88,8 +113,8 @@ class Session:
         if not self.enforce_recording_limits:
             return None
         if (time.monotonic_ns()-self.start_mono_ns)/1e9>=self.config['max_session_seconds']:return '达到本条录制时长上限'
-        if self.byte_count>=self.config['max_session_bytes']:return '达到本条录制大小上限'
-        if shutil.disk_usage(self.path).free<self.config['minimum_free_bytes']:return 'D盘剩余空间低于20 GiB'
+        if self.byte_count + (self.external_bytes() if self.external_bytes else 0) >= self.config['max_session_bytes']:return '达到本条录制大小上限'
+        if shutil.disk_usage(self.path).free<self.config['minimum_free_bytes']:return '录制目录可用空间低于工作站设置'
         return None
 
     def close(self, reason, quality=None):

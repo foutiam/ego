@@ -1,48 +1,94 @@
 (() => {
   'use strict';
 
-  function create({display, status, stamp}) {
-    const id = Array.from(crypto.getRandomValues(new Uint8Array(4)),
-      value => value.toString(16).padStart(2, '0')).join('');
+  const TICK_MS = 40;
+  const MAX_RTT_MS = 120;
+  const MAX_AGE_MS = 6500;
+
+  function displayId() {
+    const bytes = new Uint8Array(4);
+    if (window.crypto?.getRandomValues) window.crypto.getRandomValues(bytes);
+    else for (let index = 0; index < bytes.length; index++) bytes[index] = Math.floor(Math.random() * 256);
+    return Array.from(bytes, value => value.toString(16).padStart(2, '0')).join('');
+  }
+
+  function create({display, status, stamp, retry}) {
+    const id = displayId();
     const code = new QRCode(display, {width:420, height:420, correctLevel:QRCode.CorrectLevel.M});
-    const refreshMs = 40;
     let anchor = null;
+    let issue = '';
     let lastTime = -1;
     let active = false;
     let generation = 0;
-    let syncTimer, drawTimer;
+    let requestId = 0;
+    let pending, syncTimer, drawTimer;
 
-    function updateStatus(message) {
+    function updateStatus(message, canRetry = false) {
       if (status.textContent !== message) status.textContent = message;
+      if (retry) retry.hidden = !canRetry;
     }
 
-    async function measure() {
-      const begin = performance.now();
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 1200);
-      try {
-        const reply = await fetch('./qr-clock', {cache:'no-store', signal:controller.signal});
-        if (!reply.ok) return null;
-        const {hostMonoMs} = await reply.json();
-        const end = performance.now();
-        if (!Number.isSafeInteger(hostMonoMs) || end - begin > 120) return null;
-        return {offset:hostMonoMs - (begin + end) / 2, rtt:end - begin, measured:end};
-      } finally {
-        clearTimeout(timeout);
-      }
+    function measure() {
+      return new Promise(resolve => {
+        const request = new XMLHttpRequest();
+        request.open('GET', './qr-clock?probe=' + id + '-' + ++requestId);
+        request.timeout = 1600;
+        const begin = performance.now();
+        let headersAt = null;
+        pending = request;
+        request.onreadystatechange = () => {
+          if (request.readyState === 2 && headersAt === null) headersAt = performance.now();
+        };
+        const finish = result => {
+          if (pending === request) pending = null;
+          resolve(result);
+        };
+        request.onload = () => {
+          const end = headersAt ?? performance.now();
+          if (request.status !== 200) {
+            finish({issue:'采集时钟返回错误（HTTP ' + request.status + '）。'});
+            return;
+          }
+          let hostMonoMs;
+          try { hostMonoMs = JSON.parse(request.responseText).hostMonoMs; }
+          catch { /* Report malformed or missing time from this endpoint. */ }
+          if (!Number.isSafeInteger(hostMonoMs) || hostMonoMs <= 0) {
+            finish({issue:'采集时钟返回的时间无效。'});
+          } else if (end - begin > MAX_RTT_MS) {
+            finish({issue:'手机与电脑之间延迟过高（' + Math.ceil(end - begin) +
+              ' ms）。请保持同一 Wi-Fi，靠近接入点后重试。'});
+          } else {
+            finish({offset:hostMonoMs - (begin + end) / 2, rtt:end - begin, measured:end});
+          }
+        };
+        request.onerror = () => finish({issue:'手机无法访问采集时钟。请确认与电脑连接到同一 Wi-Fi。'});
+        request.ontimeout = () => finish({issue:'采集时钟响应超时。请确认与电脑连接到同一 Wi-Fi。'});
+        request.onabort = () => finish(null);
+        request.send();
+      });
     }
 
     async function synchronize(token) {
       let best = null;
       for (let index = 0; index < 3 && token === generation; index++) {
-        try {
-          const sample = await measure();
-          if (sample && (!best || sample.rtt < best.rtt)) best = sample;
-        } catch { /* Another request can still provide a clock sample. */ }
+        const sample = await measure();
+        if (token !== generation || !sample) return;
+        if (sample.issue) {
+          issue = sample.issue;
+          continue;
+        }
+        if (!best || sample.rtt < best.rtt) best = sample;
+        if (!anchor || performance.now() - anchor.measured > MAX_AGE_MS || sample.rtt <= anchor.rtt) {
+          anchor = sample;
+        }
+        draw();
       }
       if (token !== generation) return;
-      if (best) anchor = best;
-      syncTimer = setTimeout(() => synchronize(token), 2200);
+      if (best) {
+        anchor = best;
+        issue = '';
+      }
+      syncTimer = setTimeout(() => synchronize(token), anchor ? 2200 : 650);
     }
 
     function blank() {
@@ -52,12 +98,12 @@
 
     function draw() {
       const now = performance.now();
-      if (document.hidden || !anchor || now - anchor.measured > 6500) {
+      if (document.hidden || !anchor || now - anchor.measured > MAX_AGE_MS) {
         blank();
-        updateStatus('等待采集时钟');
+        updateStatus(issue || '正在连接采集时钟…', Boolean(issue));
         return;
       }
-      const time = Math.floor((now + anchor.offset) / refreshMs) * refreshMs;
+      const time = Math.floor((now + anchor.offset) / TICK_MS) * TICK_MS;
       if (time <= lastTime) return;
       const payload = 'EGO1:' + id + ':' + time + ':' + Math.ceil(anchor.rtt);
       code.makeCode(payload);
@@ -67,29 +113,63 @@
       lastTime = time;
     }
 
-    blank();
-    return {setActive(value) {
+    function setActive(value) {
       if (active === value) return;
       active = value;
       const token = ++generation;
       clearTimeout(syncTimer);
       clearInterval(drawTimer);
+      if (pending) pending.abort();
       anchor = null;
+      issue = '';
       blank();
       if (active) {
-        updateStatus('连接采集时钟…');
+        updateStatus('正在连接采集时钟…');
         void synchronize(token);
-        drawTimer = setInterval(draw, refreshMs);
+        drawTimer = setInterval(draw, TICK_MS);
       }
-    }};
+    }
+
+    blank();
+    if (retry) retry.addEventListener('click', () => {
+      setActive(false);
+      setActive(!document.hidden);
+    });
+    return {setActive};
   }
 
   window.EgoQrClock = {create};
   const display = document.getElementById('qr');
   if (display) {
-    const clock = create({display, status:document.getElementById('status'), stamp:document.getElementById('stamp')});
-    const update = () => clock.setActive(!document.hidden);
+    const clock = create({display, status:document.getElementById('status'),
+      stamp:document.getElementById('stamp'), retry:document.getElementById('retry')});
+    const screen = document.getElementById('phoneDisplay');
+    const clockPanel = document.getElementById('clockPanel');
+    const boardPanel = document.getElementById('boardPanel');
+    const boardImage = document.getElementById('boardImage');
+    const buttons = Array.from(document.querySelectorAll('[data-display-mode]'));
+    let mode = 'qr';
+    const update = () => clock.setActive(!document.hidden && mode !== 'board');
+    for (const button of buttons) {
+      button.addEventListener('click', () => {
+        mode = button.dataset.displayMode;
+        screen.dataset.mode = mode;
+        clockPanel.hidden = mode === 'board';
+        boardPanel.hidden = mode === 'qr';
+        if (!boardPanel.hidden && !boardImage.hasAttribute('src')) {
+          boardImage.src = location.pathname.startsWith('/ego-capture/') ? './api/exo/board.png' : './qr-board.png';
+        }
+        for (const choice of buttons) choice.setAttribute('aria-pressed', String(choice === button));
+        update();
+      });
+    }
+    boardImage?.addEventListener('error', () => {
+      boardImage.removeAttribute('src');
+      document.getElementById('boardNote').textContent = '标定板加载失败，请刷新页面或核对工作台提供的手机地址。';
+    });
     document.addEventListener('visibilitychange', update);
+    window.addEventListener('pageshow', update);
     update();
   }
 })();
+

@@ -7,6 +7,7 @@ from threading import Lock
 
 import numpy as np
 
+from .contact_calibration import map_touch_time, move_between_camera_axes, raw_touch_time
 from visuotactile import skeleton_stream
 from visuotactile.protocol import GloveDecoder, decode_emf, decode_pressure
 
@@ -145,15 +146,26 @@ def _finger_scores(frame, calibration):
     return scores
 
 
-def recorded_hand_at(folder, origin, time_s):
+def recorded_hand_at(folder, origin, time_s, *, timing=None, camera_axes=None):
     target = origin + round(time_s * 1e9)
+    adjusted = (timing or {}).get('status') == 'applied'
+    visual_s = move_between_camera_axes(time_s, *camera_axes) if adjusted and camera_axes is not None else time_s
+    tactile_s = raw_touch_time(visual_s, timing) if adjusted else time_s
+    tactile_target = origin + round(tactile_s * 1e9)
     sample = dict(grid=None, emf=None, finger_scores={}, pressure_baseline=None,
                   gloveStatus='此时刻附近没有手套数据帧。')
     try:
-        packet = _packet_at(folder, target)
+        packet = _packet_at(folder, tactile_target)
     except FileNotFoundError:
         packet = None
         sample['gloveStatus'] = '录制未保存可读取的手套原始数据。'
+    if packet is not None and adjusted:
+        lo, hi = timing['taskRangeS']
+        raw_s = (packet[0] - origin) / 1e9
+        sample_s = map_touch_time(raw_s, timing)
+        left, right = move_between_camera_axes(np.asarray([lo, hi]), *camera_axes) if camera_axes is not None else (lo, hi)
+        if not (lo <= raw_s < hi and left <= sample_s < right and abs(sample_s - visual_s) <= MAX_DELTA_NS / 1e9):
+            packet = None
     if packet is not None:
         stamp, frame = packet
         path = folder / 'calibration.json'
@@ -162,8 +174,10 @@ def recorded_hand_at(folder, origin, time_s):
             calibration = _recorded_calibration(path, stat.st_size, stat.st_mtime_ns)
         except FileNotFoundError:
             calibration = {}
-        sample.update(timeS=(stamp - origin) / 1e9, deltaMs=(stamp - target) / 1e6,
-                      grid=decode_pressure(frame).tolist(), emf=decode_emf(frame),
+        raw_s = (stamp - origin) / 1e9
+        sample_s = map_touch_time(raw_s, timing) if adjusted else raw_s
+        sample.update(timeS=sample_s, rawTimeS=raw_s, timingApplied=adjusted,
+                      deltaMs=(sample_s - visual_s) * 1000.0, grid=decode_pressure(frame).tolist(), emf=decode_emf(frame),
                       finger_scores=_finger_scores(frame, calibration),
                       pressure_baseline=(calibration.get('touch_pressure_baseline') or {}).get('grid'),
                       gloveStatus='')

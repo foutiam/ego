@@ -18,6 +18,7 @@ let TOKEN = '';
 let state = null;
 let sessions = [];
 let reviewFrames = [];
+let reviewTaskRange = null;
 let reviewQuality = null;   // the selected session's QC block (contact candidates live here)
 let reviewSessionId = '';
 let reviewPlaying = false;
@@ -45,7 +46,8 @@ function paintRecordedPressure(sample, text = '当前时刻附近没有手套原
       ctx.fillRect(column * cell, row * cell, cell - 1, cell - 1);
     }
   }
-  $('recordedPressureTime').textContent = sample.timeS.toFixed(3) + ' s · 接收时间差 '
+  $('recordedPressureTime').textContent = sample.timeS.toFixed(3) + ' s · '
+    + (sample.timingApplied ? '校准后时间差 ' : '接收时间差 ')
     + sample.deltaMs.toFixed(1) + ' ms · 原始 count 0–255';
 }
 function queueRecordedPressure(time, text) {
@@ -84,7 +86,7 @@ async function loadImports() {
   lastImportPoll = Date.now();
   try {
     const {directory, sessions: rows} = await api('/api/imports');
-    $('captureInboxPath').textContent = directory;
+    setCopyableText('captureInboxPath', directory);
     const pending = rows.filter(row => !row.error);
     const incomplete = rows.filter(row => row.error && !row.error.includes('已有此录制编号'));
     const status = pending.length ? pending.length + ' 条待自动导入'
@@ -134,6 +136,19 @@ function renderFacts(id, rows) {
   }));
 }
 
+function qrSummary(report) {
+  if (!report) return '';
+  if (report.status === 'offset_only') return '二维码仅能估计偏移';
+  if (report.status === 'host_receipt') return '保留电脑接收时间';
+  return '二维码对齐 ' + report.drift_aligned_cameras + '/' + report.expected_cameras + ' 路';
+}
+function qrOutcome(camera) {
+  if (camera.status === 'host_receipt') return camera.reason || '保留原时间轴';
+  const label = camera.status === 'offset_and_drift' ? '偏移与漂移' : '仅偏移';
+  const residual = Number.isFinite(camera.residual_ms) ? ' · 残差中位数 ' + camera.residual_ms.toFixed(1) + ' ms' : '';
+  return label + ' · ' + camera.observations + ' 个时间码' + residual;
+}
+
 function renderQualityJob(job, pending = false) {
   const record = sessions.find(session => session.session_id === selectedSessionId);
   if (!record) return;
@@ -141,7 +156,8 @@ function renderQualityJob(job, pending = false) {
   const busy = pending || ownJob?.status === 'running';
   const processed = Boolean(record.processed);
   const hasReview = processed && (record.quality?.stereo_pairs_paired > 0 || record.quality?.glove_valid_frames > 0);
-  $('qcStatus').textContent = busy ? '整理中' : ownJob?.status === 'failed' ? '整理失败' : processed ? '已整理' : '待整理';
+  const scanningQr = busy && /二维码|时间码/.test(ownJob?.message || '');
+  $('qcStatus').textContent = scanningQr ? '对齐中' : busy ? '整理中' : ownJob?.status === 'failed' ? '整理失败' : processed ? '已整理' : '待整理';
   $('qcJobMessage').textContent = busy ? (ownJob?.message || '正在提交整理…')
     : ownJob?.status === 'failed' ? ownJob.message : '';
   $('process').textContent = processed ? '重新整理' : '开始整理';
@@ -172,10 +188,15 @@ async function loadQualityDetail(id) {
   $('qcContactCount').textContent = Array.isArray(qc?.contact_candidates) ? qc.contact_candidates.length : '—';
   $('qualitySummary').textContent = qc ? JSON.stringify(qc, null, 1) : '这条录制还没有整理报告。';
   renderFacts('qcOriginalSetup', [['随录标定', '正在读取…']]);
+  const alignment = record.qr_alignment;
+  $('qcQrStatus').textContent = qrSummary(alignment) ||
+    (record.auto_qr_sync ? '待自动扫描' : '尚无自动对齐记录');
   renderFacts('qcSyncFacts', [
+    ...(alignment?.outcomes || []).map(camera => [camera.name, qrOutcome(camera)]),
     ['双目设备时间差', formatSyncStats(qc?.stereo_pair_device_delta_ms, true)],
     ['双目主机接收时间差', formatSyncStats(qc?.stereo_pair_receipt_delta_ms)],
-    ['手套与相机的关联', qc ? '按本机接收时间，物理同步待验证' : '待整理'],
+    ['手套时间', alignment?.glove?.source === 'unavailable' ? '没有可用的接收时间记录'
+      : qc ? '按电脑接收时间，手套采样延迟待独立测量' : '待整理'],
     ['整理使用的触觉基线', qc?.baseline_source === 'captured_rest_calibration' ? '随录静置基线'
       : qc?.baseline_source === 'first_two_seconds_unverified' ? '用录制前两秒估算，未验证' : '暂无记录']
   ]);
@@ -298,12 +319,224 @@ function fmtBytes(n) {
   return Math.round(n / 1024) + ' KiB';
 }
 
-let recordStartPending = false;
-function setRecordingButtons(recording) {
-  $('startRecord').disabled = recording || recordStartPending;
-  $('startUnlimitedRecord').disabled = recording || recordStartPending;
-  $('stopRecord').disabled = !recording;
+function setCopyableText(id, value) {
+  $(id).textContent = value || '';
+  for (const button of document.querySelectorAll('[data-copy-text="' + id + '"]')) {
+    button.disabled = !value;
+  }
 }
+document.addEventListener('click', async event => {
+  const button = event.target.closest('button[data-copy-text]');
+  if (!button) return;
+  const element = $(button.dataset.copyText);
+  const value = element?.textContent;
+  if (!value) return;
+  try {
+    await navigator.clipboard.writeText(value);
+    toast('已复制');
+  } catch {
+    const selected = document.createRange();
+    selected.selectNodeContents(element);
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(selected);
+    toast('已选中文字，按 Ctrl+C 复制');
+  }
+});
+
+let recordStartPending = false;
+let liveSources = null, liveSourcesPending = false, liveSourcesError = '';
+let nextCaptureName = '';
+let activeCaptureName = '';
+const sourceSelects = [...document.querySelectorAll('[data-capture-serial], [data-capture-exo]')];
+const validCaptureId = value => /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(value.trim());
+
+function renderLiveSources() {
+  for (const select of sourceSelects) {
+    const serialRole = select.dataset.captureSerial;
+    const role = serialRole || select.dataset.captureExo;
+    const selected = serialRole ? liveSources?.serial_selection[role] : liveSources?.exo[role]?.id;
+    const choices = serialRole
+      ? (liveSources?.serial.serial_ports || []).map(row => ({
+        id:row.port, label:row.port + (row.description && row.description !== row.port ? ' · ' + row.description : '')
+      }))
+      : (liveSources?.video || []).map(row => ({...row, label:row.label + (row.virtual ? ' · 虚拟相机' : '')}));
+    const automatic = serialRole ? state?.[role]?.port : null;
+    select.replaceChildren(new Option(serialRole ? '自动识别' + (automatic ? ' · ' + automatic : '') : '不使用', ''),
+      ...choices.map(row => new Option(row.label, row.id)));
+    if (selected && !choices.some(row => row.id === selected)) {
+      select.add(new Option(serialRole ? selected + ' · 未连接' : '已选相机 · 未连接', selected));
+    }
+    select.value = selected || '';
+  }
+  const error = liveSources?.video_error;
+  $('liveSourceError').hidden = !error;
+  $('liveSourceError').textContent = error || '';
+  setRecordingButtons(Boolean(state?.recording));
+}
+
+async function refreshLiveSources() {
+  if (liveSourcesPending) return;
+  liveSourcesPending = true;
+  setRecordingButtons(Boolean(state?.recording));
+  try {
+    liveSources = await api('/api/live/sources');
+    nextCaptureName = liveSources.next_name;
+    liveSourcesError = '';
+  } catch (error) {
+    liveSourcesError = error.message === 'Not found'
+      ? '当前工作台服务尚未载入新版设备选择。重启工作台服务后可使用。'
+      : '设备列表读取失败：' + error.message;
+  } finally {
+    liveSourcesPending = false;
+    renderLiveSources();
+  }
+}
+
+$('liveRefreshSources').onclick = refreshLiveSources;
+for (const select of sourceSelects) {
+  select.onchange = async () => {
+    const role = select.dataset.captureSerial || select.dataset.captureExo;
+    const source = select.value;
+    liveSourcesPending = true;
+    setRecordingButtons(Boolean(state?.recording));
+    try {
+      liveSources = await post('/api/live/source', {role, source});
+      if (role === 'glove') {
+        touchBuf.length = 0;
+        paintGlove(null);
+      }
+      await pollState();
+    } catch (error) {
+      toast(error.message);
+    } finally {
+      liveSourcesPending = false;
+      renderLiveSources();
+    }
+  };
+}
+
+function paintGlove(grid) {
+  const canvas = $('gloveRawPreview');
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (!Array.isArray(grid) || !grid.length || !grid[0]?.length) return null;
+  const w = canvas.width / grid[0].length, h = canvas.height / grid.length;
+  let peak = 0;
+  grid.forEach((row, y) => row.forEach((value, x) => {
+    peak = Math.max(peak, value);
+    if (value > 0) {
+      ctx.fillStyle = 'rgba(109, 222, 193, ' + Math.min(1, 0.18 + value / 55) + ')';
+      ctx.fillRect(x*w, y*h, w-1, h-1);
+    }
+  }));
+  return peak;
+}
+function renderQuickGlove(g, stale) {
+  const peak = paintGlove(stale ? null : g?.pressure);
+  const status = $('gloveLiveStatus');
+  status.dataset.ready = String(peak !== null);
+  const message = peak === null
+    ? state?.glove?.message || '等待手套数据'
+    : '触觉数据接收中 · 原始峰值 ' + peak + (g.skeleton_pose ? ' · 骨架有输出' : '');
+  if (status.textContent !== message) status.textContent = message;
+}
+
+function recordingBlocker() {
+  if (!state || stateStaleSince) return '正在等待采集服务';
+  if (state.recording_blocker) return state.recording_blocker;
+  if (!Object.hasOwn(state,'recording_blocker')) {
+    if (state.mode !== 'live') return '请先返回实时模式';
+    if (!state.camera?.connected || state.camera.stale || !state.previews_present?.every(Boolean)) {
+      return '请连接头戴双目并等待两路实时画面';
+    }
+    if (!state.glove?.connected || state.glove.stale) return '请连接左手手套';
+  }
+  return '';
+}
+for (const name of ['objectId','sceneId']) {
+  $(name).addEventListener('input', () => setRecordingButtons(Boolean(state?.recording)));
+}
+function setRecordingButtons(recording) {
+  const blocker = recording ? '' : recordingBlocker();
+  const disabled = recording || recordStartPending || liveSourcesPending || Boolean(blocker);
+  const advancedReady = validCaptureId($('objectId').value) && validCaptureId($('sceneId').value);
+  $('startRecord').disabled = disabled || !liveSources || Boolean(liveSourcesError);
+  $('startDetailedRecord').disabled = disabled || !advancedReady;
+  $('startUnlimitedRecord').disabled = disabled || !advancedReady;
+  $('stopRecord').disabled = !recording;
+  $('recordingName').disabled = recording || recordStartPending;
+  $('recordingName').placeholder = recording ? activeCaptureName || nextCaptureName : nextCaptureName || '录制 001';
+  for (const select of sourceSelects) {
+    select.disabled = !liveSources || liveSources.offline || recording || recordStartPending || liveSourcesPending;
+  }
+  $('liveRefreshSources').disabled = liveSourcesPending || recording;
+  const ready = $('recordReadiness');
+  ready.dataset.ready = String(!blocker);
+  const text = recordStartPending ? '正在启动录制' : recording ? '正在录制已选来源'
+    : liveSourcesPending ? '正在检查输入设备' : liveSourcesError || blocker || '已选相机和手套均有数据，可以开始录制';
+  if (ready.textContent !== text) ready.textContent = text;
+  window.renderContactPhase?.();
+}
+
+const phoneQrSetting = 'ego-capture-phone-qr-url';
+function parsePhoneQrAddress(value) {
+  if (!value) return '';
+  try {
+    const url = new URL(value);
+    const allowed = url.protocol === 'http:' || url.protocol === 'https:';
+    if (allowed && !url.username && !url.password) return url.href;
+  } catch { /* Invalid input is reported next to the field. */ }
+  return '';
+}
+let phoneQrShortcut = '';
+try {
+  phoneQrShortcut = parsePhoneQrAddress(localStorage.getItem(phoneQrSetting));
+} catch { /* The station may run with browser storage disabled. */ }
+$('phoneQrAddress').value = phoneQrShortcut;
+
+function renderPhoneQrAddress() {
+  const active = parsePhoneQrAddress(state?.qr_phone_url);
+  const url = active || phoneQrShortcut;
+  $('phoneQrLinkRow').hidden = !url;
+  $('phoneQrMissing').hidden = Boolean(url);
+  $('phoneQrSettings').hidden = Boolean(active);
+  if (url) {
+    $('phoneQrLink').href = url;
+    setCopyableText('phoneQrLink', url);
+  }
+}
+
+$('phoneQrAddressForm').addEventListener('submit', event => {
+  event.preventDefault();
+  const value = $('phoneQrAddress').value.trim();
+  const address = parsePhoneQrAddress(value);
+  const status = $('phoneQrAddressStatus');
+  const host = address ? new URL(address).hostname.toLowerCase() : '';
+  if (value && (!host || ['localhost', 'localhost.', '[::1]'].includes(host) || host.startsWith('127.'))) {
+    status.textContent = '请输入电脑的局域网地址。手机无法打开电脑的 localhost 地址。';
+    return;
+  }
+  phoneQrShortcut = address;
+  try {
+    if (address) localStorage.setItem(phoneQrSetting, address);
+    else localStorage.removeItem(phoneQrSetting);
+  } catch {
+    status.textContent = '地址已应用到当前页面，浏览器无法保存。';
+    renderPhoneQrAddress();
+    return;
+  }
+  status.textContent = address ? '已保存到此浏览器' : '已清除';
+  renderPhoneQrAddress();
+  if (address) $('phoneQrSettings').open = false;
+});
+window.addEventListener('storage', event => {
+  if (event.key === phoneQrSetting) {
+    phoneQrShortcut = parsePhoneQrAddress(event.newValue);
+    $('phoneQrAddress').value = phoneQrShortcut;
+    renderPhoneQrAddress();
+  }
+});
 
 function renderState() {
   if (!state) return;
@@ -336,7 +569,7 @@ function renderState() {
   $('sessCam').textContent = fmtSess(pd && pd.camera);
   $('sessGlove').textContent = fmtSess(pd && pd.glove);
   $('clockStatus').textContent = '相机校时：' + (c.clock_status || '未发送') +
-    '。视触时间对应仍未验证；同步验证需按「02 标定与同步」操作。';
+    '。视触时间对应仍未验证；同步验证需按「标定与同步」操作。';
   const rec = dev.recording;
   const calibrationState = g.calibration_state;
   /* Which bridge source is live: the page is served from disk on every request
@@ -394,7 +627,7 @@ function renderState() {
   if (rec) {
     $('recordTimer').textContent = rec.seconds.toFixed(1) + ' s · ' + fmtBytes(rec.bytes);
     setRecordingButtons(true);
-    $('recordingInfo').textContent = '会话 ' + rec.session_id + (rec.limits_enabled === false ? ' · 不限额录制' : '') + ' · 原始数据流写入本地';
+    $('recordingInfo').textContent = rec.name || activeCaptureName || '会话 ' + rec.session_id;
   } else {
     $('recordTimer').textContent = '未录制';
     setRecordingButtons(false);
@@ -404,9 +637,11 @@ function renderState() {
   /* Preview frames, touch curve and sensor bars are owned by the fast
      /api/live/meta and /api/live/touch loops, not by this 2 s status poll. */
   if (state.job) renderJob(state.job);
+  window.refreshContactCalibration?.();
   if (qualityExpanded && $('directory').classList.contains('active')) renderQualityJob(state.job);
   if (Date.now() - lastImportPoll > 12000) loadImports();
-  $('outputPath').textContent = state.output_root;
+  setCopyableText('outputPath', state.output_root);
+  renderPhoneQrAddress();
   if (pose.timing_ms) {
     $('poseStatus').textContent += ' · 推理 ' + pose.timing_ms.ema_ms + ' ms（EMA）';
   }
@@ -1864,6 +2099,9 @@ function renderJob(job) {
 async function refreshAfterJob(job) {
   try {
     await loadSessions({refreshDetail:job.session_id === selectedSessionId});
+    if (job.label === '整理录制数据（QC）') {
+      window.refreshContactCalibration?.({completedSession:job.session_id});
+    }
     if (job.label === '导入录制') await loadImports();
 
   } catch (e) { /* the panel already reported the job; a refresh failure is not a job failure */ }
@@ -1957,7 +2195,9 @@ async function refreshQrVideos() {
   const picker = $('qrVideos');
   const selected = new Set(Array.from(picker.selectedOptions, option => option.value));
   try {
-    const {videos, directory} = await api('/api/calibration/qr-inputs');
+    const id = $('calibSyncSession').value;
+    const {videos, directory} = await api('/api/calibration/qr-inputs?' + new URLSearchParams({id}));
+    if ($('calibSyncSession').value !== id) return;
     $('qrVideoDirectory').textContent = directory;
     picker.replaceChildren(...videos.map(name => new Option(name, name, false, selected.has(name))));
   } catch (error) { $('qrResult').textContent = error.message; }
@@ -1965,12 +2205,16 @@ async function refreshQrVideos() {
 
 function renderQrReport(report) {
   const link = $('qrReport');
-  link.hidden = !report?.cameras?.length;
+  link.hidden = !report?.cameras?.length && !report?.outcomes?.length;
   if (link.hidden) {
     $('qrResult').textContent = '所选录制还没有二维码同步报告。';
     return;
   }
   link.href = capturePath('/api/calibration/qr-result?id=' + encodeURIComponent(report.session_id));
+  if (report.outcomes) {
+    $('qrResult').textContent = report.outcomes.map(camera => camera.name + ' · ' + qrOutcome(camera)).join(' ｜ ');
+    return;
+  }
   const cameras = report.cameras.map(camera => camera.name + ' · ' + camera.observations +
     ' 帧 · ' + (camera.mode === 'offset_only' ? '仅偏移' : '偏移与漂移') +
     ' · 拟合残差中位数 ' + camera.median_abs_residual_ms.toFixed(1) + ' ms');
@@ -2244,18 +2488,25 @@ function syncSessionPickers() {
   const calibration = $('calibSyncSession');
   const previousCalibration = calibration.value;
   const sourceChanged = $('sessionSelect').value !== selectedSessionId;
+  if (sourceChanged) $('exportReceipt').hidden = true;
   for (const picker of ['sessionSelect', 'reviewSession', 'calibSyncSession']) {
     const select = $(picker);
     select.replaceChildren(new Option('选择录制', ''));
     for (const session of sessions) {
-      const label = picker === 'sessionSelect' ? session.session_id
-        : [session.session_id, session.object_id, Number(session.duration_s || 0).toFixed(1) + ' s'].filter(Boolean).join(' · ');
-      select.add(new Option(label, session.session_id));
+      const name = session.name || session.session_id;
+      const label = picker === 'sessionSelect' ? name
+        : [name, session.capture_mode === 'quick' ? null : session.object_id,
+           Number(session.duration_s || 0).toFixed(1) + ' s'].filter(Boolean).join(' · ');
+      const option = new Option(label, session.session_id);
+      option.dataset.processed = String(Boolean(session.processed));
+      select.add(option);
     }
     select.value = select === calibration && !sourceChanged && previousCalibration ? previousCalibration : selectedSessionId;
     if (!select.value) select.value = '';
   }
   if (calibration.value !== previousCalibration) clearCalibrationResult();
+  window.refreshContactCalibration?.();
+  window.refreshExoReadiness?.();
 }
 function renderSessionTable() {
   const quality = $('quality');
@@ -2271,17 +2522,21 @@ function renderSessionTable() {
     const details = document.createElement('div');
     details.className = 'session-entry-details';
     const title = document.createElement('strong');
-    title.textContent = session.session_id;
+    title.textContent = session.name || session.session_id;
+    title.title = session.session_id;
     const detail = document.createElement('span');
     detail.className = 'muted';
-    detail.textContent = [session.object_id, session.scene_id, session.split,
-      Number(session.duration_s || 0).toFixed(1) + ' s'].filter(Boolean).join(' · ');
+    const duration = Number(session.duration_s || 0).toFixed(1) + ' s';
+    detail.textContent = session.capture_mode === 'quick' ? duration
+      : [session.object_id, session.scene_id, session.split, duration].filter(Boolean).join(' · ');
     const status = document.createElement('span');
     status.textContent = session.processed ? (session.reviewed ? '已复核' : '已整理') : '待整理';
     status.className = 'tag';
     const actions = document.createElement('div');
     actions.className = 'session-entry-actions';
-    for (const [view, label] of [['quality','整理详情'], ['review','选段与标注']]) {
+    const views = [['quality','整理详情'], ['review','选段与标注']];
+    if (session.contact_calibration) views.unshift(['contact', '核对视触校准']);
+    for (const [view, label] of views) {
       const button = document.createElement('button');
       button.type = 'button';
       button.className = view === 'review' && session.processed ? 'small primary' : 'small';
@@ -2296,6 +2551,12 @@ function renderSessionTable() {
       actions.append(button);
     }
     details.append(title, detail, status);
+    if (session.qr_alignment || session.auto_qr_sync) {
+      const qr = document.createElement('span');
+      qr.className = 'tag';
+      qr.textContent = qrSummary(session.qr_alignment) || '二维码待扫描';
+      details.append(qr);
+    }
     row.append(details, actions);
     return row;
   });
@@ -2409,8 +2670,12 @@ async function loadSessionDetail(id) {
     reviewSessionId = id;
     reviewQuality = detail.quality;
     reviewDuration = Number(detail.metadata?.duration_s) || 0;
+    reviewTaskRange = detail.task_range || null;
+    $('reviewContactCalibration').hidden = !detail.metadata?.contact_calibration;
     reviewFrames = [...(detail.frames || [])].sort((a,b) => a.t_s-b.t_s);
-    $('sessionSummary').textContent = [detail.metadata?.object_id, reviewDuration.toFixed(1) + ' s',
+    const reviewScope = reviewTaskRange ? '正式任务 ' + (reviewTaskRange[1] - reviewTaskRange[0]).toFixed(1) + ' s'
+      : detail.metadata?.contact_calibration ? '没有标记正式任务' : reviewDuration.toFixed(1) + ' s';
+    $('sessionSummary').textContent = [detail.metadata?.object_id, reviewScope,
       reviewFrames.length + ' 组双目', reviewQuality ? '已整理' : '待整理'].filter(Boolean).join(' · ');
     $('reviewContent').hidden = false;
     $('reviewOpenQuality').hidden = Boolean(reviewQuality && reviewFrames.length);
@@ -2710,7 +2975,7 @@ function renderReviewSegments(segments, id, position) {
   const wanted = pendingReviewSegment?.session === id ? pendingReviewSegment.name : null;
   if (wanted) pendingReviewSegment = null;
   reviewSegments = segments;
-  select.replaceChildren(new Option('整条会话', ''));
+  select.replaceChildren(...(reviewTaskRange ? [] : [new Option('整条会话', '')]));
   for (const [index,row] of segments.entries()) {
     const outcome = {success:'成功',failed:'失败',incomplete:'未完成'}[row.outcome];
     const description = [row.label || row.name,
@@ -2718,28 +2983,31 @@ function renderReviewSegments(segments, id, position) {
       outcome, row.workflow ? '已登记' : '录制分段'].filter(Boolean).join(' · ');
     select.add(new Option(description, String(index)));
   }
-  const index = segments.findIndex(row => wanted ? row.name === wanted :
+  let index = segments.findIndex(row => wanted ? row.name === wanted :
     previous?.session === id && row.name === previous.name &&
     row.startS === previous.startS && row.endS === previous.endS);
   if (!wanted && index < 0 && previous?.session === id && previous.custom) {
     selectReviewRange(previous, position);
     return;
   }
+  if (index < 0 && reviewTaskRange) index = segments.findIndex(row =>
+    row.startS === reviewTaskRange[0] && row.endS === reviewTaskRange[1]);
   select.value = index < 0 ? '' : String(index);
   chooseReviewSegment(wanted ? null : position);
 }
 function chooseReviewSegment(position = null) {
   const value = $('reviewSegment').value;
   if (value === 'custom') return;
-  const row = value === '' ? null : reviewSegments[Number(value)];
+  const row = value === '' ? reviewSegments.find(item => reviewTaskRange &&
+    item.startS === reviewTaskRange[0] && item.endS === reviewTaskRange[1]) : reviewSegments[Number(value)];
   selectReviewRange(row ? {...row, session:reviewSessionId} : null, position);
   if (!row) {
     clearReviewDraft();
     return;
   }
   $('workflowSegmentName').value = row.name;
-  $('workflowSegmentStart').value = row.startS.toFixed(6);
-  $('workflowSegmentEnd').value = row.endS.toFixed(6);
+  $('workflowSegmentStart').value = String(row.startS);
+  $('workflowSegmentEnd').value = String(row.endS);
   const options = [...$('workflowSegmentCategory').options];
   $('workflowSegmentCategory').value = row.category === 'attempt'
     ? (row.outcome === 'failed' ? 'miss' : 'normal')
@@ -2753,13 +3021,17 @@ $('reviewPreviewRange').onclick = () => {
     $('workflowSegmentStatus').textContent = '起止时间须在本次录制内，且终点晚于起点。';
     return;
   }
+  if (reviewTaskRange && (start < reviewTaskRange[0] || end > reviewTaskRange[1])) {
+    $('workflowSegmentStatus').textContent = '请选择正式任务内的时间。';
+    return;
+  }
   $('reviewSegment').value = '';
   $('workflowSegmentStatus').textContent = '已应用自选区间。';
   selectReviewRange({startS:start,endS:end,name:'自选区间',session:reviewSessionId,custom:true});
 };
 for (const [button,target] of [['reviewMarkStart','workflowSegmentStart'],['reviewMarkEnd','workflowSegmentEnd']]) {
   $(button).onclick = () => {
-    if (reviewTimeS !== null) $(target).value = reviewTimeS.toFixed(6);
+    if (reviewTimeS !== null) $(target).value = String(reviewTimeS);
   };
 }
 window.openCaptureSegment = (session, name) => openSessionReview(session, name).catch(error => toast(error.message));
@@ -2852,6 +3124,8 @@ $('sessionTable').addEventListener('click', event => {
   if (button.dataset.view === 'quality') {
     if (qualityExpanded && selectedSessionId === id) closeQuality(id);
     else openQuality(id).catch(error => toast(error.message));
+  } else if (button.dataset.view === 'contact') {
+    window.openContactCalibration?.(id).catch(error => toast(error.message));
   } else {
     chooseSession(id, 'review').catch(error => toast(error.message));
   }
@@ -2943,7 +3217,7 @@ async function openCalibrationLive(showQr) {
   if (showQr && !liveQrVisible) $('toggleLiveQr').click();
   await showCaptureTab('directory');
   setLiveView(true);
-  if (showQr) $('toggleLiveQr').focus();
+  if (showQr) { $('liveQrPanel').open = true; $('toggleLiveQr').focus(); }
   else $('liveTitle').focus();
 }
 $('calibOpenLive').onclick = () => openCalibrationLive(false);
@@ -2952,8 +3226,11 @@ $('calibShowLiveQr').onclick = () => openCalibrationLive(true);
 const calibrationViews = [...document.querySelectorAll('[data-calib-view]')];
 function refreshCalibrationView() {
   const active = calibrationViews.find(button => button.getAttribute('aria-pressed') === 'true');
-  $('calibRecordingTools').hidden = active?.dataset.calibView === 'calibDevices';
-  if (active?.dataset.calibView === 'calibClocks') refreshQrVideos();
+  const view = active?.dataset.calibView || 'calibDevices';
+  $('calib').dataset.view = view;
+  $('calibRecordingTools').hidden = view === 'calibDevices';
+  if (view === 'calibClocks') refreshQrVideos();
+  if (view === 'calibContact') window.refreshContactCalibration?.();
   if (active?.dataset.calibView === 'calibAdvanced') loadMarkerLayout();
 }
 for (const button of calibrationViews) {
@@ -2965,7 +3242,14 @@ for (const button of calibrationViews) {
     refreshCalibrationView();
   };
 }
-$('calibSyncSession').addEventListener('change', clearCalibrationResult);
+$('firstCaptureCalibration').addEventListener('click', () => {
+  $('tabCalib').click();
+  document.querySelector('[data-calib-view="calibDevices"]').click();
+});
+$('calibSyncSession').addEventListener('change', () => {
+  clearCalibrationResult();
+  refreshQrVideos();
+});
 $('calibOpenSnapshot').onclick = () => {
   openQuality($('calibSyncSession').value).catch(error => toast(error.message));
 };
@@ -2979,12 +3263,19 @@ function setLiveView(enabled) {
   $('directoryList').hidden = enabled;
   $('importPanel').hidden = enabled;
   $('quality').hidden = enabled || !qualityExpanded;
-  if (!enabled) loadImports();
+  if (enabled) refreshLiveSources();
+  else loadImports();
   updateLiveQr();
 }
 $('captureLive').onclick = () => {
   setLiveView(true);
   $('liveTitle').focus();
+};
+$('liveOpenQr').onclick = () => {
+  const panel = $('liveQrPanel');
+  panel.open = true;
+  panel.scrollIntoView({block:'nearest', behavior:'smooth'});
+  $('toggleLiveQr').focus({preventScroll:true});
 };
 $('liveBackToDirectory').onclick = () => {
   setLiveView(false);
@@ -3135,16 +3426,25 @@ async function captureTouchBaseline() {
 }
 $('baseline').addEventListener('click', captureTouchBaseline);
 $('calibTouchBaseline').addEventListener('click', captureTouchBaseline);
-async function startRecording(unlimited) {
+async function startRecording(mode) {
   if (recordStartPending || state?.recording) return;
+  const blocker = recordingBlocker();
+  if (blocker) return toast(blocker);
   recordStartPending = true;
   setRecordingButtons(false);
   try {
-    await post(unlimited ? '/api/record/start-unlimited' : '/api/record/start', {
-      object_id: $('objectId').value, scene_id: $('sceneId').value,
-      material: $('material').value, split: $('split').value
-    });
-    toast(unlimited ? '不限额录制已开始' : '录制已开始');
+    if (mode === 'quick') {
+      const name = $('recordingName').value.trim();
+      activeCaptureName = name || nextCaptureName;
+      await post('/api/record/quick', {name,
+        contact_calibration: Boolean(state?.contact_calibration_supported && $('contactCalibrationEnabled').checked)});
+    } else {
+      await post(mode === 'unlimited' ? '/api/record/start-unlimited' : '/api/record/start', {
+        object_id: $('objectId').value.trim(), scene_id: $('sceneId').value.trim(),
+        material: $('material').value, split: $('split').value
+      });
+    }
+    toast('录制已开始');
     await pollState();
   } catch (e) { toast(e.message); }
   finally {
@@ -3152,8 +3452,9 @@ async function startRecording(unlimited) {
     setRecordingButtons(Boolean(state?.recording));
   }
 }
-$('startRecord').addEventListener('click', () => startRecording(false));
-$('startUnlimitedRecord').addEventListener('click', () => startRecording(true));
+$('startRecord').addEventListener('click', () => startRecording('quick'));
+$('startDetailedRecord').addEventListener('click', () => startRecording('details'));
+$('startUnlimitedRecord').addEventListener('click', () => startRecording('unlimited'));
 $('stopRecord').addEventListener('click', async () => {
   try {
     if (window.guidedCapture && window.guidedCapture.ownsRecording()) {
@@ -3166,9 +3467,15 @@ $('stopRecord').addEventListener('click', async () => {
     if (r.session_id) {
       requestedReviewSession = r.session_id;
       notifyEgoCaptureUpdated();
-      toast('已保存，正在安排自动整理：' + r.session_id);
+      $('recordingName').value = '';
+      activeCaptureName = '';
+      const incomplete = Object.keys(r.exo || {}).filter(role => r.exo[role].status !== 'saved');
+      toast(incomplete.length ? '会话已保存，EXO 视频不完整：' + incomplete.join('、') : '会话已保存，将自动整理并对齐二维码');
     }
-    loadSessions();
+    await loadSessions();
+    if (r.session_id && sessions.some(session => session.session_id === r.session_id && session.contact_calibration)) {
+      await window.openContactCalibration?.(r.session_id, {firstPart:true});
+    }
   }
   catch (e) { toast(e.message); }
 });
@@ -3193,14 +3500,25 @@ $('process').addEventListener('click', async () => {
   }
 });
 $('exportBtn').addEventListener('click', async () => {
-  const id = $('sessionSelect').value; if (!id) return toast('请选择会话');
+  const id = $('sessionSelect').value;
+  if (!id) return toast('请选择会话');
+  const button = $('exportBtn');
+  const receipt = $('exportReceipt');
+  if (button.disabled) return;
+  button.disabled = true;
+  receipt.hidden = false;
+  $('exportMessage').textContent = '正在打包所选录制…';
+  setCopyableText('exportLocation', '');
   try {
-    const r = await fetch(capturePath('/api/export?id=' + encodeURIComponent(id)), { headers: { 'X-Capture-Token': TOKEN } });
-    const b = await r.json();
-    if (!r.ok) throw new Error(b.error);
-    $('loaderResult').textContent='导出完成：\n'+JSON.stringify(b,null,1);
-    $('loaderResult').classList.add('show');
-  } catch (e) { toast(e.message); }
+    const exportInfo = await api('/api/export?' + new URLSearchParams({id}));
+    if ($('sessionSelect').value !== id) return;
+    $('exportMessage').textContent = 'ZIP 已保存到本机 · ' + fmtBytes(exportInfo.bytes);
+    setCopyableText('exportLocation', exportInfo.export_path);
+  } catch (error) {
+    if ($('sessionSelect').value === id) $('exportMessage').textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
 });
 /* ---- split polling loops (2026-09-17) ----
    Before: one setInterval(poll, 600) fetched the heavy /api/state for
@@ -3247,15 +3565,17 @@ async function pollMeta() {
     $('notice').textContent = m.notice || '';
     if (state) { state.mode = m.mode; state.recording = m.recording; }
     const rec = m.recording;
+    if (m.next_name) nextCaptureName = m.next_name;
     if (rec) {
       $('recordTimer').textContent = rec.seconds.toFixed(1) + ' s · ' + fmtBytes(rec.bytes);
       setRecordingButtons(true);
-      $('recordingInfo').textContent = '会话 ' + rec.session_id + (rec.limits_enabled === false ? ' · 不限额录制' : '') + ' · 原始数据流写入本地';
+      $('recordingInfo').textContent = rec.name || activeCaptureName || '会话 ' + rec.session_id;
     } else {
       $('recordTimer').textContent = '未录制';
       setRecordingButtons(false);
       $('recordingInfo').textContent = '';
     }
+    if ($('live').hidden || $('directory').hidden) return;
     for (const cam of [0, 1]) {
       const img = $('cam' + cam), empty = $('empty' + cam);
       if (m.previews_present[cam] && !replaying) {
@@ -3266,8 +3586,29 @@ async function pollMeta() {
           (m.cam_shape[cam] ? m.cam_shape[cam][0] + 'x' + m.cam_shape[cam][1] + ' · ' : '') +
           '实测 ' + hz.toFixed(0) + ' fps（显示流）';
       } else {
+        img.removeAttribute('src');
         img.style.display = 'none'; empty.style.display = 'block';
+        const message = state?.camera?.message;
+        empty.textContent = !state?.camera?.connected && message ? message : '等待相机画面';
+        $('resolution' + cam).textContent = '—';
       }
+    }
+    for (let i = 1; i <= 3; i++) {
+      const info = m.exo?.['exo' + i];
+      const img = $('exoPreview' + i), empty = $('exoEmpty' + i), status = $('exoStatus' + i);
+      const visible = Boolean(info?.ready && info.preview_id && !replaying);
+      if (visible && img.dataset.frame !== String(info.preview_id)) {
+        img.dataset.frame = String(info.preview_id);
+        img.src = capturePath('/frame/exo' + i + '.jpg?t=' + info.preview_id);
+      } else if (!visible) {
+        img.removeAttribute('src');
+        delete img.dataset.frame;
+      }
+      img.hidden = !visible;
+      empty.hidden = visible;
+      empty.textContent = info?.error ? '无法读取所选来源' : info ? '等待相机画面' : '选择相机后预览';
+      status.textContent = visible ? info.shape.join(' × ') : info?.error ? '连接异常' : info ? '连接中' : '未使用';
+      status.title = info?.error || '';
     }
   } catch (e) {
     if (!metaStaleSince) metaStaleSince = Date.now();
@@ -3287,13 +3628,15 @@ async function pollTouch() {
     if (t.window_reset) touchBuf.length = 0;
     for (const s of t.samples) touchBuf.push(s);
     while (touchBuf.length > 600) touchBuf.shift();
-    drawTouch(touchBuf);
+    if ($('liveMore').open && !$('live').hidden && !$('directory').hidden) drawTouch(touchBuf);
     if (t.glove && state) {
       state.glove = Object.assign({}, state.glove, t.glove);
       const g = t.glove;
+      if (!$('live').hidden && !$('directory').hidden) renderQuickGlove(g, t.glove_stale);
+      if (!$('liveMore').open || $('live').hidden || $('directory').hidden) return;
       $('touchBadge').textContent = g.baseline_ready
         ? ('基线已保存（相对响应' + (g.pressure_baseline_ready ? ' + 压感静置基线' : '；压感静置基线缺失') + '）')
-        : (g.calibrating ? '正在采集基线…' : '等待基线');
+        : (g.calibrating ? '正在采集基线…' : g.pressure ? '原始触觉数据' : '等待数据');
       // Primary output first: the 24 joint angles and the 25-point skeleton must
       // render even if an auxiliary panel below throws (see safeRender note).
       renderJointCommand(g);
@@ -3324,7 +3667,10 @@ async function pollTouch() {
     }
     if (!t.glove_stale) markStale(0, 'touchStale');
   } catch (e) { if (!touchStaleSince) touchStaleSince = Date.now(); }
-  finally { markStale(touchStaleSince, 'touchStale'); touchBusy = false; }
+  finally {
+    if (markStale(touchStaleSince, 'touchStale')) renderQuickGlove(null, true);
+    touchBusy = false;
+  }
 }
 
 async function pollState() {
@@ -3332,14 +3678,22 @@ async function pollState() {
   try {
     state = await api('/api/state');
     $('standaloneLinks').hidden = !state.standalone;
+    for (const advanced of document.querySelectorAll('[data-full-workflow]')) {
+      advanced.hidden = Boolean(state.standalone);
+    }
     TOKEN = state.token;
     stateStaleSince = 0;
     renderState();
-  } catch (e) { /* server restarting or idle; retry */ if (!stateStaleSince) stateStaleSince = Date.now(); }
+  } catch (e) { if (!stateStaleSince) stateStaleSince = Date.now(); setRecordingButtons(Boolean(state?.recording)); }
   finally { stateBusy = false; }
 }
 
-pollState().then(() => Promise.all([loadSessions(), loadImports()])).catch(error => toast(error.message));
+pollState().then(async () => {
+  await Promise.all([loadSessions(), loadImports()]);
+  if (captureQuery.get('contactReview') === '1' && selectedSessionId) {
+    await window.openContactCalibration?.(selectedSessionId, {firstPart:true});
+  }
+}).catch(error => toast(error.message));
 setInterval(pollMeta, 70);      // ≈14 Hz meta poll; actual fps is capped by the
 setInterval(pollTouch, 50);     // server preview encoder / glove sample rate
 setInterval(pollState, 2000);

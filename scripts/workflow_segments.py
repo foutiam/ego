@@ -104,6 +104,11 @@ class Segments:
             raise ValueError('Imported recording format differs from the registered segment')
         if end > metadata['duration_s'] + .001:
             raise ValueError('Segment exceeds the original recording')
+        if source == 'capture' and metadata.get('contact_calibration'):
+            task = metadata['contact_calibration']
+            lo, hi = task.get('task_start_s'), task.get('task_end_s')
+            if not all(type(t) in (int, float) and math.isfinite(t) for t in (lo, hi)) or not lo <= start < end <= hi:
+                raise ValueError('正式片段须位于开始任务与结束任务之间')
         revision = fingerprint(dict(recording=recording, segment=name, start=start, end=end,
                                    metadata=fingerprint(metadata), row=row))
         key = name if legacy else 'seg-' + revision[:32]

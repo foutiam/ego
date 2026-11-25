@@ -17,7 +17,7 @@ import numpy as np
 from .protocol import VisioDecoder, GloveDecoder, protobuf, first
 from .devices import VideoDecoder
 from .pose import HandPose
-from .storage import dump_json
+from .storage import contact_calibration_windows, dump_json, recorded_task_range
 
 
 def read_json(path): return json.loads(Path(path).read_text(encoding='utf-8-sig'))
@@ -133,6 +133,13 @@ def process_session(path, config, progress=lambda _:None, infer_pose=True):
     origin=meta['start_mono_ns'];fps=config['training']['sample_fps'];start=time.monotonic();written=0
     packet_clocks = [OrderedDict(), OrderedDict()]
     unmatched_frame_clocks = 0
+    calibration_windows = contact_calibration_windows(meta)
+    calibration_dir = target / 'contact-calibration'
+    calibration_frames = []
+    if calibration_windows:
+        for cam in (0, 1):
+            (calibration_dir / f'cam{cam}').mkdir(parents=True, exist_ok=True)
+    task_range = recorded_task_range(meta)
     try:
         for data,host,mono in raw_reads(path,'camera'):
             processing_limit=float(config.get('processing_max_seconds',max(900.,min(7200.,float(meta.get('duration_s',0))*3))))
@@ -152,10 +159,26 @@ def process_session(path, config, progress=lambda _:None, infer_pose=True):
                         unmatched_frame_clocks += 1
                         continue
                     frame_host, frame_mono = frame_clock
-                    bucket=int(stamp/1e9*fps)
-                    if bucket==last_bucket[cam]:continue
-                    last_bucket[cam]=bucket;rgb=decoded.to_ndarray(format='rgb24');h,w=rgb.shape[:2]
-                    scale=min(1.,960/w);im=cv2.resize(rgb,(round(w*scale),round(h*scale)))
+                    receipt_s = (frame_mono - origin) / 1e9
+                    part = next((label for label, (lo, hi) in calibration_windows.items()
+                                 if lo <= receipt_s < hi), None)
+                    bucket = int(stamp / 1e9 * fps)
+                    sampled = bucket != last_bucket[cam]
+                    if not sampled and part is None:
+                        continue
+                    rgb = decoded.to_ndarray(format='rgb24')
+                    h,w = rgb.shape[:2]
+                    scale = min(1., 960 / w)
+                    im = cv2.resize(rgb, (round(w*scale),round(h*scale)))
+                    if part:
+                        review = calibration_dir / f'cam{cam}/{stamp}.jpg'
+                        cv2.imencode('.jpg', cv2.cvtColor(im,cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY,85])[1].tofile(review)
+                        written += review.stat().st_size
+                        calibration_frames.append(dict(cam=f'cam{cam}', part=part, device_ns=str(stamp),
+                                                       source_s=stamp/1e9, receipt_s=receipt_s))
+                    if not sampled:
+                        continue
+                    last_bucket[cam] = bucket
                     name=f'cam{cam}/{stamp}.jpg';file=target/name
                     cv2.imwrite(str(file),cv2.cvtColor(im,cv2.COLOR_RGB2BGR),[cv2.IMWRITE_JPEG_QUALITY,88]);written+=file.stat().st_size
                     record={'cam':cam,'device_ns':stamp,'host_ns':frame_host,'host_mono_ns':frame_mono,'t_s':(frame_mono-origin)/1e9,
@@ -174,26 +197,37 @@ def process_session(path, config, progress=lambda _:None, infer_pose=True):
                 raw_values.append(np.frombuffer(raw,dtype=np.uint8)[offsets].copy());times.append((mono-origin)/1e9)
         if not raw_values:raise ValueError('手套记录中没有有效帧')
         values=np.array(raw_values,dtype=float);times=np.array(times);cal=read_json(path/'calibration.json')
+        if calibration_windows:
+            task_samples = ((times >= task_range[0]) & (times < task_range[1])) if task_range else np.zeros(len(times), dtype=bool)
+        else:
+            task_samples = np.ones(len(times), dtype=bool)
+        task_times = times[task_samples]
         baseline=cal.get('touch_baseline')
         baseline_source='captured_rest_calibration'
         if baseline is None:
-            baseline=np.median(values[times<=times[0]+2],axis=0);baseline_source='first_two_seconds_unverified'
+            baseline_mask = task_samples & (times <= task_times[0] + 2) if len(task_times) else (times <= times[0] + 2)
+            baseline=np.median(values[baseline_mask],axis=0);baseline_source='first_two_seconds_unverified'
         score=np.median(np.maximum(values-np.asarray(baseline),0),axis=1)
         intervals=[];active=False;on=None;change=0
-        for t,s in zip(times,score):
+        for t,s in zip(task_times,score[task_samples]):
             desired=s>config['contact_off_delta'] if active else s>=config['contact_on_delta']
             change=change+1 if desired!=active else 0
             if change>=3:
                 active=desired;change=0
                 if active:on=float(t)
                 elif on is not None:intervals.append([on,float(t)]);on=None
-        if on is not None:intervals.append([on,float(times[-1])])
+        if on is not None:intervals.append([on,float(task_times[-1])])
         labels=np.asarray(config.get('contact_channel_map',[]),dtype='U')
         np.savez_compressed(target/'glove_signals.npz',time_s=times,raw_values=values.astype(np.uint8),score=score,
                             byte_offsets=offsets,channel_labels=labels,
                             channel_map_source=np.asarray(config.get('contact_channel_map_source','unconfirmed')))
+        task_frames = (frames if not calibration_windows else
+                       [f for f in frames if task_range and task_range[0] <= f['t_s'] < task_range[1]])
         paired, device_deltas, receipt_deltas, duplicate_pairs = pair_stereo_frames(
-            (f for f in frames if f['cam']==0), (f for f in frames if f['cam']==1))
+            (f for f in task_frames if f['cam']==0), (f for f in task_frames if f['cam']==1))
+        if calibration_windows:
+            (calibration_dir/'frames.jsonl').write_text(''.join(json.dumps(row)+'\n' for row in calibration_frames),
+                                                        encoding='utf-8')
         # Keep host-time navigation ordered even when serial reads tie or arrive out of device order.
         paired.sort(key=lambda row: (row['host_mono_ns'], row['device_ns']))
 
@@ -271,6 +305,9 @@ def build_dataset(root, config, task='future_contact', allow_synthetic=False):
     for p in sorted((root/'sessions').glob('*/metadata.json')):
         path=p.parent;meta=read_json(p);annotations_path=path/'annotations.json'
         if meta.get('evidence')!='real_devices' and not (allow_synthetic and meta.get('evidence')=='synthetic_software_fixture'):continue
+        if meta.get('split') == 'unassigned':
+            reasons.append(f"{meta['session_id']}: 尚未分配数据集")
+            continue
         if not (path/'derived/quality.json').exists():reasons.append(f"{meta['session_id']}: 尚未处理");continue
         annotation=read_json(annotations_path)
         if not annotation.get('reviewed'):reasons.append(f"{meta['session_id']}: 尚未审核");continue

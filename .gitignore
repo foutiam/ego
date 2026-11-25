@@ -3,5 +3,6 @@ __pycache__/
 *.pyc
 capture.local.json
 recordings/
+demo-station/
 outputs/
 runtime/

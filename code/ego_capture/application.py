@@ -14,6 +14,8 @@ import sys
 import threading
 import time
 import urllib.parse
+
+import av
 from queue import Empty, SimpleQueue
 from pathlib import Path
 
@@ -90,6 +92,8 @@ class Application:
         self.config['port'] = port
         base = self.config_path.resolve().parent if standalone else ROOT
         self.standalone = standalone
+        self.connect_devices = connect_devices
+        self.qr_phone_url = None
         self.root = (base / self.config['output_root']).resolve()
         self.inbox = (base / self.config.get('import_root', str(self.root / 'imports') if standalone
                                              else 'data/ego/imports')).resolve()
@@ -116,6 +120,7 @@ class Application:
         self.pending_recording_qc = SimpleQueue()
         self.devices = StationDevices(self.config)
         self.devices.on_recording_saved = self.pending_recording_qc.put
+        self.queue_interrupted_alignment()
         if connect_devices:
             self.devices.launch()
 
@@ -393,6 +398,10 @@ class Application:
                 x['reviewed'] = read_json(p.parent / 'annotations.json').get('reviewed', False)
                 if q.exists():
                     x['quality'] = read_json(q)
+                auto = self.automatic_alignment(p.parent)
+                if auto:
+                    x['qr_alignment'] = {key: auto[key] for key in
+                                         ('status', 'drift_aligned_cameras', 'expected_cameras', 'outcomes', 'glove')}
                 rows.append(x)
             except (ValueError, OSError):
                 continue
@@ -414,7 +423,7 @@ class Application:
                     'camera.bin', 'glove.bin', 'camera-reads.csv', 'glove-reads.csv')
         optional = ('camera.mcap', 'device.json', 'events.jsonl',
                     'guided-capture.json', 'hand_pose.jsonl', 'openxr_skeleton.jsonl', 'manual-events.json',
-                    'segments.json')
+                    'segments.json', 'contact-calibration-review.json')
         files = []
         for name in required + optional:
             file = source / name
@@ -467,6 +476,23 @@ class Application:
                         or not 0 <= start < end <= duration + .001):
                     raise ValueError('片段重名或区间超出录制')
                 names.add(name)
+        from ego_capture.live_exo import ROLES
+        live_exo = meta.get('exo_live', {})
+        if not isinstance(live_exo, dict) or any(role not in ROLES for role in live_exo):
+            raise ValueError('会话的直连 EXO 来源记录无效')
+        for role, record in live_exo.items():
+            if not isinstance(record, dict) or record.get('status') not in ('saved', 'incomplete'):
+                raise ValueError('会话的直连 EXO 保存状态无效')
+            for key, suffix in (('video', '.mp4'), ('timestamps', '.csv')):
+                relative = record.get(key)
+                if relative is None and record['status'] == 'incomplete':
+                    continue
+                if relative != f'exo-live/{role}-live{suffix}':
+                    raise ValueError('会话的直连 EXO 文件名无效')
+                file = source / relative
+                if not file.is_file() or file.resolve() != file or file.is_symlink():
+                    raise ValueError(f'缺少或无法读取会话文件 {relative}')
+                files.append(file)
         from ego_capture.exo_calibration import session_assets
         try:
             files.extend(session_assets(source))
@@ -556,8 +582,48 @@ class Application:
                 available = False
         return dict(original=original, comparison=selected, comparison_available=available)
 
+    @staticmethod
+    def automatic_alignment(session):
+        from ego_capture.qr_sync import AUTO_REPORT
+        path = session / 'derived' / AUTO_REPORT
+        if not path.is_file():
+            return None
+        try:
+            report = read_json(path)
+        except (OSError, ValueError):
+            return None
+        return (report if isinstance(report, dict) and report.get('schema') == 'ego-qr-clock-v1'
+                and report.get('session_id') == session.name else None)
+
+    def queue_interrupted_alignment(self):
+        for metadata in (self.root / 'sessions').glob('*/metadata.json'):
+            try:
+                data = read_json(metadata)
+                if (data.get('status') == 'recorded' and data.get('auto_qr_sync')
+                        and self.automatic_alignment(metadata.parent) is None):
+                    self.pending_recording_qc.put(metadata.parent.name)
+            except (OSError, ValueError):
+                continue
+
+    def prepare_recording(self, session, progress, *, reprocess=False):
+        from ego_capture.qr_sync import analyze_recording
+
+        quality = session / 'derived/quality.json'
+        if reprocess or not quality.is_file():
+            qc = process_session(session, self.config, progress)
+        else:
+            qc = read_json(quality)
+        if read_json(session / 'metadata.json').get('contact_calibration'):
+            from ego_capture.contact_calibration import prepare_exo_frames
+            progress('整理任务前后的校准画面…')
+            prepare_exo_frames(session, self.config['minimum_free_bytes'])
+        if reprocess or self.automatic_alignment(session) is None:
+            progress('基础整理完成，正在扫描各路二维码…')
+            analyze_recording(session, progress)
+        return qc
+
     def dispatch_recording_qc(self):
-        """Process one newly closed recording when the shared local worker is idle."""
+        """Prepare a closed recording, then align its saved camera sources."""
         if self.devices.session or (self.job or {}).get('status') == 'running':
             return
         try:
@@ -568,11 +634,11 @@ class Application:
             session = self.closed_session_path(session_id)
         except (OSError, ValueError):
             return
-        if (session / 'derived/quality.json').is_file():
+        if (session / 'derived/quality.json').is_file() and self.automatic_alignment(session):
             return
         try:
             self.run_job('整理录制数据（QC）',
-                         lambda progress: process_session(session, self.config, progress),
+                         lambda progress: self.prepare_recording(session, progress),
                          session_id=session.name)
         except ValueError:
             # Another local job or capture became active since the idle check.
@@ -644,9 +710,38 @@ class Application:
                              and p['pid'] == self.config['camera_pid']],
             'glove_match': [p for p in ports if p['vid'] == self.config['glove_vid']
                             and p['pid'] == self.config['glove_pid']],
-            'virtual_cameras_note': 'OpenCV/DirectShow 索引（含 NVIDIA 虚拟相机）不属于本站设备路径；'
-                                    '本站只通过串口协议连接真实双目与手套。',
+            'virtual_cameras_note': '头戴双目和手套使用串口协议，EXO 使用 Windows 视频设备。',
         }
+
+    def live_sources(self, *, refresh_video=True):
+        devices = self.devices
+        serial = self.device_report()
+        with devices.lock:
+            if not self.connect_devices:
+                videos, error = [], None
+            else:
+                try:
+                    videos, error = (devices.exo.discover() if refresh_video else list(devices.exo.catalog.values())), None
+                except (ValueError, av.FFmpegError) as exc:
+                    videos, error = [], str(exc)
+            return dict(serial=serial, video=videos, video_error=error,
+                        next_name=devices.next_recording_name, offline=not self.connect_devices,
+                        serial_selection={kind: self.config.get(f'{kind}_port_override') or ''
+                                          for kind in ('camera', 'glove')},
+                        exo=devices.exo.state())
+
+    def exo_videos(self, session_id=''):
+        from ego_capture.qr_sync import exo_catalog
+        videos = exo_catalog(self.exo_root)
+        if session_id:
+            folder = self.closed_session_path(session_id)
+            row = read_json(folder / 'metadata.json').get('exo_live', {})
+            live = exo_catalog(folder / 'exo-live')
+            for role, record in row.items():
+                name = f'{role}-live.mp4'
+                if record.get('status') == 'saved' and name in live:
+                    videos[f'本次录制 · {name}'] = live[name]
+        return videos
 
     # ---- export / loader check ------------------------------------------
     def export_session(self, session_id):
@@ -780,20 +875,22 @@ class CaptureRoutes:
     def get_capture(self, path, query):
         try:
             app = self.app
-            if path in ('/qr-timecode.html', '/qr-timecode.js', '/qr-renderer.js', '/qr-clock'):
+            if path in ('/qr-timecode.html', '/qr-timecode.js', '/qr-renderer.js', '/qr-clock', '/qr-board.png'):
                 from ego_capture.qr_display import response
                 body, kind = response(path)
                 return self.send(200, body, kind)
             if path == '/api/calibration/qr-inputs':
-                from ego_capture.qr_sync import exo_catalog
-                return self.send(200, {'videos': sorted(exo_catalog(app.exo_root)), 'directory': str(app.exo_root)})
+                return self.send(200, {'videos': sorted(app.exo_videos(query.get('id', [''])[0])),
+                                       'directory': str(app.exo_root)})
             if path == '/api/exo/options':
                 from ego_capture.exo_calibration import profiles
-                from ego_capture.qr_sync import exo_catalog
                 return self.send(200, {'video_directory': str(app.exo_root),
                                        'profile_directory': str(app.exo_profiles),
-                                       'videos': sorted(exo_catalog(app.exo_root)),
+                                       'videos': sorted(app.exo_videos(query.get('id', [''])[0])),
                                        'profiles': sorted(profiles(app.exo_profiles))})
+            if path == '/api/exo/intrinsics-example':
+                example = ROOT / 'configs/ego-exo-intrinsics.example.json'
+                return self.send(200, example.read_bytes(), 'application/json; charset=utf-8')
             if path == '/api/exo/board.png':
                 from ego_capture.exo_calibration import board_png
                 return self.send(200, board_png(), 'image/png')
@@ -808,11 +905,26 @@ class CaptureRoutes:
                 if report.is_file():
                     return self.send(200, read_json(report))
                 exo_report = folder / 'derived' / 'exo-session.json'
-                return self.send(200, read_json(exo_report)['sync'] if exo_report.is_file() else {'status':'missing'})
+                if exo_report.is_file():
+                    return self.send(200, read_json(exo_report)['sync'])
+                return self.send(200, app.automatic_alignment(folder) or {'status':'missing'})
+            if path == '/api/live/sources':
+                return self.send(200, app.live_sources())
+            if path.startswith('/frame/exo'):
+                role = path.removeprefix('/frame/').removesuffix('.jpg')
+                with app.devices.lock:
+                    feed = app.devices.exo.feeds.get(role)
+                    image = feed.preview if feed else None
+                if image and time.monotonic_ns() - image[0] < 3_000_000_000:
+                    return self.send(200, image[1], 'image/jpeg')
+                return self.send(404, {'message': '等待画面'})
             if path == '/api/state':
                 out = app.devices.snapshot()
                 out.update(token=app.token, job=app.job, output_root=str(app.root),
                            station=app.config.get('station', 'v2'), standalone=app.standalone,
+                           qr_phone_url=app.qr_phone_url, contact_calibration_supported=True,
+                           recording_blocker=(app.devices.recording_blocker() if app.connect_devices else
+                                              '当前为离线整理模式。连接设备并取消 --offline 后可录制。'),
                            code_root=str(ROOT), git_commit=app.git_commit,
                            origin_expected=['http://127.0.0.1:%d' % app.config['port'],
                                             'http://localhost:%d' % app.config['port']],
@@ -825,21 +937,23 @@ class CaptureRoutes:
                 # needs, so live preview latency is decoupled from the heavy
                 # full /api/state snapshot.
                 d = app.devices
-                rec = None
-                if d.session:
-                    rec = {'session_id': d.session.id,
-                           'seconds': (time.monotonic_ns() - d.session.start_mono_ns) / 1e9,
-                           'bytes': d.session.byte_count}
                 with d.lock:
-                    mode = d.state.get('mode')
-                    notice = d.state.get('notice', '')
-                    shapes = [d.state['camera'].get('cam0_shape'),
-                              d.state['camera'].get('cam1_shape')]
-                return self.send(200, {
-                    'ts': time.time(), 'server_mono_ns': time.monotonic_ns(),
-                    'mode': mode, 'notice': notice, 'cam_shape': shapes,
-                    'previews_present': [p is not None for p in d.previews],
-                    'recording': rec, 'preview_hz': d.preview_hz()})
+                    session = d.session
+                    rec = (dict(session_id=session.id, name=session.metadata.get('name'),
+                                contact_phase=d.contact_phase(session),
+                                seconds=(time.monotonic_ns() - session.start_mono_ns) / 1e9,
+                                bytes=session.byte_count + d.exo.bytes()) if session else None)
+                    now = time.monotonic()
+                    payload = {
+                        'ts': time.time(), 'server_mono_ns': time.monotonic_ns(),
+                        'mode': d.state['mode'], 'notice': d.state['notice'],
+                        'cam_shape': [d.state['camera'].get(f'cam{cam}_shape') for cam in (0, 1)],
+                        'previews_present': [
+                            preview is not None and entry is not None and now - entry['arrived'] < 3
+                            for preview, entry in zip(d.previews, d.latest, strict=True)],
+                        'exo': d.exo.state(), 'next_name': d.next_recording_name,
+                        'recording': rec, 'preview_hz': d.preview_hz()}
+                return self.send(200, payload)
             if path == '/api/live/touch':
                 # Drains scored touch samples newer than the client cursor so
                 # short presses survive between polls (server samples ~20 Hz).
@@ -948,8 +1062,12 @@ class CaptureRoutes:
                 time_s = float(query.get('time', ['nan'])[0])
                 if meta.get('session_id') != folder.name or not 0 <= time_s <= meta['duration_s']:
                     raise ValueError('触觉时间超出所选录制')
-                return self.send(200, dict(sessionId=folder.name,
-                                           sample=recorded_hand_at(folder, meta['start_mono_ns'], time_s)))
+                from ego_capture.contact_calibration import review_camera_axes, timing_for_recording
+                timing, camera, _ = timing_for_recording(folder, meta) if meta.get('contact_calibration') else ({}, None, None)
+                axes = review_camera_axes(folder, meta, camera) if camera else None
+                return self.send(200, dict(sessionId=folder.name, tactileTiming=timing,
+                                           sample=recorded_hand_at(folder, meta['start_mono_ns'], time_s,
+                                                                   timing=timing, camera_axes=axes)))
             if path == '/api/policy-labels':
                 from ego_capture.policy_labels import policy_labels
                 return self.send(200, policy_labels({
@@ -961,6 +1079,14 @@ class CaptureRoutes:
             if path == '/api/datasets':
                 return self.send(200, [read_json(p) for p in
                                        sorted((app.root / 'datasets').glob('*/manifest.json'), reverse=True)])
+            if path in ('/api/contact-calibration', '/api/contact-calibration/frame'):
+                from ego_capture import contact_calibration
+                folder = app.closed_session_path(query.get('id', [''])[0])
+                cam = query.get('cam', ['cam0'])[0]
+                if path.endswith('/frame'):
+                    image = contact_calibration.frame_path(folder, cam, query.get('frame', [''])[0])
+                    return self.send(200, image.read_bytes(), 'image/jpeg')
+                return self.send(200, contact_calibration.view(folder, query.get('part', ['before'])[0], cam))
             if path == '/api/session':
                 p = session_path(app.root, query.get('id', [''])[0])
                 from ego_capture import guided_capture
@@ -979,6 +1105,21 @@ class CaptureRoutes:
                         guided = read_json(guided_file) if guided_file.is_file() else None
                         detail['segments'] = review_intervals(p.name, meta['duration_s'], guided, registry=app.segments())
                         detail['frames'] = read_jsonl(p / 'derived/paired_frames.jsonl')
+                        if meta.get('contact_calibration'):
+                            from visuotactile.storage import recorded_task_range
+                            task = recorded_task_range(meta)
+                            from ego_capture.contact_calibration import timing_for_recording
+                            timing, _, _ = timing_for_recording(p, meta)
+                            detail['tactile_timing'] = timing
+                            detail['task_range'] = task
+                            detail['segments'] = [row for row in detail['segments']
+                                                  if task and task[0] <= row['startS'] < row['endS'] <= task[1]]
+                            detail['frames'] = [
+                                row for row in detail['frames'] if task and task[0] <= row['t_s'] < task[1]]
+                            if task and not any(row['name'] == 'task' and (row['startS'],row['endS']) == task
+                                                for row in detail['segments']):
+                                detail['segments'].insert(0, dict(name='task',label='正式任务',
+                                                                  startS=task[0],endS=task[1],category='normal'))
                     return self.send(200, detail)
                 signals = []
                 if quality.exists():
@@ -1011,7 +1152,7 @@ class CaptureRoutes:
                 image = app.review_frame_path(query.get('id', [''])[0], relative)
                 return self.send(200, image.read_bytes(), 'image/jpeg')
             if path in ('/', '/index.html', '/app.js', '/style.css', '/guided-capture.js',
-                        '/review_event_view.js', '/recorded-hand-view.js', '/exo-setup.js'):
+                        '/review_event_view.js', '/recorded-hand-view.js', '/exo-setup.js', '/contact-calibration.js'):
                 p = WEB / ('index.html' if path == '/' else path[1:])
                 return self.send(200, p.read_bytes(),
                                  (mimetypes.guess_type(p.name)[0] or 'text/plain') + '; charset=utf-8')
@@ -1070,7 +1211,33 @@ class CaptureRoutes:
                 raise ValueError('Request too large')
             data = json.loads(self.rfile.read(size) or b'{}')
             dev = app.devices
-            if path == '/api/record/start':
+            if path == '/api/live/source':
+                if not app.connect_devices:
+                    raise ValueError('当前为离线整理模式')
+                role, source = data.get('role'), data.get('source', '')
+                if not isinstance(source, str):
+                    raise ValueError('请选择设备列表中的来源')
+                with dev.lock:
+                    if dev.session:
+                        raise ValueError('录制中不能切换来源')
+                    if role in ('camera', 'glove'):
+                        dev.bind_serial(role, source)
+                    else:
+                        dev.exo.bind(role, source)
+                result = app.live_sources(refresh_video=False)
+            elif path == '/api/record/quick':
+                if not app.connect_devices:
+                    raise ValueError('当前为离线整理模式')
+                result = {'session_id': dev.start_quick_recording(
+                    data.get('name', ''), contact_calibration=data.get('contact_calibration', False))}
+            elif path == '/api/record/task-boundary':
+                result = dev.mark_task_boundary(data.get('session_id'), data.get('action'))
+            elif path == '/api/contact-calibration/review':
+                from ego_capture.contact_calibration import save_check
+                folder = app.closed_session_path(data.get('session_id'))
+                with app.lock:
+                    result = save_check(folder, data.get('part'), data.get('action'), data)
+            elif path == '/api/record/start':
                 result = {'session_id': dev.start_recording(data)}
             elif path == '/api/record/start-unlimited':
                 metadata = dict(data, capture_mode='manual_unlimited')
@@ -1086,7 +1253,10 @@ class CaptureRoutes:
                     raise ValueError('Unknown guided capture action')
                 result = actions[path](app, data)
             elif path == '/api/record/stop':
-                result = {'session_id': dev.stop_recording()}
+                with dev.lock:
+                    session = dev.session
+                    result = {'session_id': dev.stop_recording(),
+                              'exo': session.metadata.get('exo_live', {}) if session else {}}
             elif path == '/api/touch/baseline':
                 dev.calibrate_touch()
             elif path == '/api/calibration/eye-assignment':
@@ -1109,12 +1279,13 @@ class CaptureRoutes:
                 result = app.run_job('EXO 标定与对齐', lambda progress: process_exo(
                     folder, data.get('cameras'), app.exo_root, app.exo_profiles,
                     app.config['minimum_free_bytes'], progress,
-                    measured_square_mm=data.get('square_mm', 25)), session_id=folder.name)
+                    measured_square_mm=data.get('square_mm', 25),
+                    video_catalog=app.exo_videos(folder.name)), session_id=folder.name)
             elif path == '/api/calibration/qr-sync':
-                from ego_capture.qr_sync import analyze, exo_catalog
+                from ego_capture.qr_sync import analyze
                 folder = app.closed_session_path(data.get('session_id', ''))
                 files = data.get('videos', [])
-                catalog = exo_catalog(app.exo_root)
+                catalog = app.exo_videos(folder.name)
                 if not isinstance(files, list) or any(type(name) is not str or name not in catalog for name in files):
                     raise ValueError('请选择导入目录里原始 Exo 视频')
                 if len(files) != len(set(files)):
@@ -1192,7 +1363,7 @@ class CaptureRoutes:
             elif path == '/api/process':
                 p = app.closed_session_path(data['session_id'])
                 result = app.run_job('整理录制数据（QC）',
-                                     lambda progress: process_session(p, app.config, progress),
+                                     lambda progress: app.prepare_recording(p, progress, reprocess=True),
                                      session_id=p.name)
             elif path == '/api/workflow-segments':
                 from workflow_segments import register
