@@ -322,7 +322,6 @@
     "distance_support_m": 1.0,
     "elastic_bins": 16
   },
-  "import_root": "recordings/imports",
-  "exo_video_root": "recordings/exo-inbox",
-  "exo_profile_root": "recordings/exo-calibrations"
+  "exo_video_files": [],
+  "exo_profile_files": []
 }

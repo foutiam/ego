@@ -17,7 +17,24 @@ py -3.11 -m venv .venv
 Copy-Item configs\ego-capture.example.json .\capture.local.json
 ```
 
-4. 默认采集文件保存在项目下的 `recordings/`。需要换盘时，在 `capture.local.json` 把 `output_root` 改为本机路径，例如 `"F:/Lab/EgoRecordings"`。同时调整或删除 `import_root`、`exo_video_root`、`exo_profile_root`，删除后它们会随录制根目录走。实际路径可在网页底部「数据保存位置」和对应导入面板查看。
+### 选择自己的保存位置和档案
+
+打开 `capture.local.json`，只改需要的路径。配置文件也可以放在自己的目录，启动时把路径传给 `--config`。支持不同盘符、带空格的目录和相对路径。相对路径从这个配置文件所在目录算起。Windows 路径建议用 `/`，例如 `F:/Lab/Ego Recordings`。
+
+| 配置项 | 用途 | 默认位置 |
+| --- | --- | --- |
+| `output_root` | 录制、整理结果和本机标定 | 配置文件旁的 `recordings/` |
+| `import_root` | 要导入的完整会话文件夹 | 录制目录下的 `imports/` |
+| `export_root` | 导出的录制 ZIP | 录制目录下的 `exports/` |
+| `exo_video_root` | EXO 原视频和标定录像的搜索目录 | 录制目录下的 `exo-inbox/` |
+| `exo_profile_root` | EXO 内参目录和新生成的可复用标定档案 | 录制目录下的 `exo-calibrations/` |
+| `exo_video_files` | 单独列出分散存放的 EXO 视频 | 空列表 |
+| `exo_profile_files` | 单独列出分散存放的 EXO 内参 JSON | 空列表 |
+| `qnbot_runtime_python` | 本机 QnBot OpenXR 环境的 `python.exe` | 留空 |
+
+只改 `output_root` 时，其他未单独设置的目录会随它移动。如果旧配置里已经写了某个目录，它会沿用该值。已录制的数据仍在原目录，换路径后可以通过「导入已有 Ego 会话」迁移需要的会话。EXO 文件分散存放时，把各文件完整路径填进对应列表，例如 `"exo_profile_files": ["G:/Lab/Calibrations/left.json", "H:/Right/cam.json"]`，列表里的文件无需搬动。
+
+保存配置并重启工作台。网页底部「数据保存位置」显示实际录制目录，导入和 EXO 面板各自显示本机目录。点「刷新文件」后，在下拉框选择视频和内参。导出后会显示完整 ZIP 路径。
 
 ## 2. 启动并检查设备
 
@@ -51,10 +68,10 @@ Copy-Item configs\ego-capture.example.json .\capture.local.json
 
 | 面板字段 | 放在哪里或怎么选 |
 | --- | --- |
-| 原始录像 | 独立相机的视频放入 `recordings/exo-inbox/`。电脑直连相机从本次录制选择。正式动作和二维码应在这份原视频中。 |
-| 桌面标定板录像 | 固定桌面板视频放入同一目录。原录像已有足够清晰的固定板画面时，可选择同一文件。 |
-| 内参 JSON | 放入 `recordings/exo-calibrations/`，匹配相机、分辨率、裁切和镜头设置。[内参示例](../configs/ego-exo-intrinsics.example.json) |
-| 内参录像 | 缺内参档案时，选择放在 EXO 视频目录的多角度拍板录像。 |
+| 原始录像 | 独立相机的视频放在已配置的 EXO 视频目录，或在 `exo_video_files` 里指定。电脑直连相机从本次录制选择。正式动作和二维码应在这份原视频中。 |
+| 桌面标定板录像 | 固定桌面板视频放在同一目录，或同样在 `exo_video_files` 里指定。原录像已有足够清晰的固定板画面时，可选择同一文件。 |
+| 内参 JSON | 从已配置的内参目录或 `exo_profile_files` 选择，匹配相机、分辨率、裁切和镜头设置。[内参示例](../configs/ego-exo-intrinsics.example.json) |
+| 内参录像 | 缺内参档案时，选择放在 EXO 视频目录或列在 `exo_video_files` 的多角度拍板录像。 |
 
 输入实测格长，点 **计算 EXO 标定与对齐**，再「查看结果」。检查各路二维码偏移／漂移和桌面标定留出误差。当前桌面验收界是 RMS ≤ 3 px。有结果后可下载 `exo-session.json`，会话的 `derived/` 也保存这份记录。头戴桌面位姿只在标定板可见且检查通过的帧输出。
 

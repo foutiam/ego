@@ -100,7 +100,10 @@ class Application:
         self.exo_root = (base / self.config.get('exo_video_root', str(self.root / 'exo-inbox') if standalone
                                                  else str(QR_EXO))).resolve()
         self.exo_profiles = (base / self.config.get('exo_profile_root', str(self.root / 'exo-calibrations'))).resolve()
-        for directory in (self.inbox, self.exo_root, self.exo_profiles):
+        self.export_root = (base / self.config.get('export_root', str(self.root / 'exports'))).resolve()
+        self.exo_video_files = self._configured_files(base, 'exo_video_files')
+        self.exo_profile_files = self._configured_files(base, 'exo_profile_files')
+        for directory in (self.inbox, self.exo_root, self.exo_profiles, self.export_root):
             directory.mkdir(parents=True, exist_ok=True)
         self.config['output_root'] = str(self.root)
         replay = self.config.get('replay_source')
@@ -109,7 +112,7 @@ class Application:
         if runtime:
             self.config['qnbot_runtime_python'] = str((base / runtime).resolve())
         (self.root / 'sessions').mkdir(parents=True, exist_ok=True)
-        (self.root / 'exports').mkdir(exist_ok=True)
+
         self.token = secrets.token_urlsafe(24)
         self.job = None
         self.lock = threading.Lock()
@@ -730,9 +733,34 @@ class Application:
                                           for kind in ('camera', 'glove')},
                         exo=devices.exo.state())
 
+    def _configured_files(self, base, key):
+        files = self.config.get(key, [])
+        if not isinstance(files, list) or any(not isinstance(path, str) or not path.strip() for path in files):
+            raise ValueError(f'{key} 须为文件路径列表')
+        return tuple(dict.fromkeys((base / path).resolve() for path in files))
+
+    @staticmethod
+    def _add_configured_files(catalog, files, suffixes):
+        available = set(catalog.values())
+        for index, path in enumerate(files, 1):
+            if path.suffix.lower() not in suffixes or not path.is_file() or path.resolve() != path:
+                continue
+            if path in available:
+                continue
+            label = f'外部文件 {index} · {path.name}'
+            while label in catalog:
+                label = '外部 · ' + label
+            catalog[label] = path
+            available.add(path)
+        return catalog
+
+    def exo_intrinsics(self):
+        from ego_capture.exo_calibration import profiles
+        return self._add_configured_files(profiles(self.exo_profiles), self.exo_profile_files, {'.json'})
+
     def exo_videos(self, session_id=''):
-        from ego_capture.qr_sync import exo_catalog
-        videos = exo_catalog(self.exo_root)
+        from ego_capture.qr_sync import EXO_SUFFIXES, exo_catalog
+        videos = self._add_configured_files(exo_catalog(self.exo_root), self.exo_video_files, EXO_SUFFIXES)
         if session_id:
             folder = self.closed_session_path(session_id)
             row = read_json(folder / 'metadata.json').get('exo_live', {})
@@ -746,7 +774,7 @@ class Application:
     # ---- export / loader check ------------------------------------------
     def export_session(self, session_id):
         p = self.closed_session_path(session_id)
-        dest = self.root / 'exports' / f'{session_id}.zip'
+        dest = self.export_root / f'{session_id}.zip'
         if dest.exists():
             dest.unlink()
         shutil.make_archive(str(dest.with_suffix('')), 'zip', p)
@@ -761,7 +789,7 @@ class Application:
         if any(segment.recording_id == session_id for segment in self.segments().items()):
             raise ValueError('此录制已有工作流片段，原始数据需保留。')
         result = delete_session(self.root, session_id)
-        export = self.root / 'exports' / f'{session_id}.zip'
+        export = self.export_root / f'{session_id}.zip'
         if export.exists():
             export.unlink()
         return result
@@ -883,11 +911,10 @@ class CaptureRoutes:
                 return self.send(200, {'videos': sorted(app.exo_videos(query.get('id', [''])[0])),
                                        'directory': str(app.exo_root)})
             if path == '/api/exo/options':
-                from ego_capture.exo_calibration import profiles
                 return self.send(200, {'video_directory': str(app.exo_root),
                                        'profile_directory': str(app.exo_profiles),
                                        'videos': sorted(app.exo_videos(query.get('id', [''])[0])),
-                                       'profiles': sorted(profiles(app.exo_profiles))})
+                                       'profiles': sorted(app.exo_intrinsics())})
             if path == '/api/exo/intrinsics-example':
                 example = ROOT / 'configs/ego-exo-intrinsics.example.json'
                 return self.send(200, example.read_bytes(), 'application/json; charset=utf-8')
@@ -1280,7 +1307,8 @@ class CaptureRoutes:
                     folder, data.get('cameras'), app.exo_root, app.exo_profiles,
                     app.config['minimum_free_bytes'], progress,
                     measured_square_mm=data.get('square_mm', 25),
-                    video_catalog=app.exo_videos(folder.name)), session_id=folder.name)
+                    video_catalog=app.exo_videos(folder.name), profile_catalog=app.exo_intrinsics()),
+                    session_id=folder.name)
             elif path == '/api/calibration/qr-sync':
                 from ego_capture.qr_sync import analyze
                 folder = app.closed_session_path(data.get('session_id', ''))
