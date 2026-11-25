@@ -6,6 +6,7 @@ import json
 from functools import lru_cache
 import math
 import re
+from time import time_ns
 
 import numpy as np
 
@@ -377,6 +378,7 @@ def save_check(folder, part, action, data):
     else:
         raise ValueError('请选择确认或跳过')
     parts = review_notes(folder)
+    result['saved_at_ns'] = time_ns()
     parts[part] = result
     dump_json(folder / REVIEW, {'schema':'ego-contact-calibration-review-v1',
                                'session_id':folder.name,'parts':parts})

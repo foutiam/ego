@@ -670,11 +670,21 @@ main, main:has(#live.active) { max-width: none; padding: 16px clamp(12px, 2vw, 2
 .release-links{justify-content:start;gap:18px}
 .release-links a{color:var(--dim);text-decoration:none;padding:4px 0}
 .release-links [aria-current]{color:var(--text);border-bottom:2px solid var(--accent)}
-.capture-start{display:grid;grid-template-columns:1fr auto;align-items:center;gap:10px 22px;margin-bottom:14px}
-.capture-start h2{font-size:17px;margin:0}
-.capture-start p{margin:4px 0 0;color:var(--dim)}
-.capture-start ol{display:flex;align-items:center;flex-wrap:wrap;gap:10px 20px;margin:0;padding-left:22px}
-#directory:has(#live:not([hidden])) .capture-start{display:none}
+.record-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px 24px;
+  padding: clamp(18px, 3.4vw, 42px);
+  background: linear-gradient(120deg, color-mix(in srgb, var(--accent) 12%, var(--panel)), var(--panel) 70%);
+  border-color: color-mix(in srgb, var(--accent) 32%, var(--line));
+}
+.record-hero h2 { margin: 0; font-size: clamp(1.5rem, 3vw, 2.15rem); line-height: 1.2; }
+.record-hero p { margin: 6px 0 0; color: var(--dim); }
+.record-cta { min-height: 44px; padding: 8px 18px; }
+.record-hero .record-cta { min-width: 136px; }
+.record-directory-options > .directory-import { margin-top: 8px; }
+.live-exo-settings .live-exo { margin-top: 12px; }
 .capture-readiness{padding:8px 10px;border:1px solid var(--line);border-radius:6px;color:var(--warn)}
 .capture-readiness[data-ready=true],.exo-camera output[data-ready=true]{color:var(--ok)}
 .advanced-recording{margin:7px 0 10px}
@@ -693,7 +703,7 @@ main, main:has(#live.active) { max-width: none; padding: 16px clamp(12px, 2vw, 2
 .exo-results li{margin:4px 0}
 .export-receipt{margin-top:10px;padding:8px 10px;background:var(--bg);border:1px solid var(--line);border-radius:6px}
 .export-receipt p{margin:0 0 6px}
-@media(max-width:700px){.capture-start{grid-template-columns:1fr}.exo-directories{grid-template-columns:1fr}}
+@media (max-width: 700px) { .exo-directories { grid-template-columns: 1fr; } }
 
 .live-heading h3 { margin:0; font-size:20px }
 .live-heading .toolbar { margin:0 }
@@ -734,35 +744,10 @@ main, main:has(#live.active) { max-width: none; padding: 16px clamp(12px, 2vw, 2
 .phone-qr-address p { width: 100%; margin: 0; }
 .phone-qr-address p:empty { display: none; }
 
-.quick-record > #contactCalibrationOption { align-self: end; min-height: 2.25rem; }
+#liveRecordOptions { grid-column: 1 / -1; margin: 4px 0 0; }
 .live-contact-calibration { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .7rem; border-top: 1px solid var(--border, #273a4c); padding-top: .7rem; }
 .live-contact-calibration p { margin: 0; }
-#calib[data-view="calibContact"] {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 12px 18px;
-  align-items: center;
-}
-#calib[data-view="calibContact"] .calib-heading,
-#calib[data-view="calibContact"] #calibOpenSnapshot,
-body:has(#calib[data-view="calibContact"]:not([hidden])) :is(#notice, #modeTag) { display: none; }
-#calib[data-view="calibContact"] .calib-nav { margin: 0; padding-bottom: 0; border: 0; }
-#calib[data-view="calibContact"] .calib-recording {
-  margin: 0;
-  padding: 0;
-  border: 0;
-  background: none;
-}
-#calib[data-view="calibContact"] .calib-recording > label {
-  display: grid;
-  grid-template-columns: auto minmax(140px, 210px);
-  align-items: center;
-  gap: 10px;
-}
-#calib[data-view="calibContact"] .calib-recording select {
-  min-width: 0;
-  text-overflow: ellipsis;
-}
+
 #calibContact { grid-column: 1 / -1; min-width: 0; }
 
 .contact-calibration-review {
@@ -894,8 +879,7 @@ body:has(#calib[data-view="calibContact"]:not([hidden])) :is(#notice, #modeTag) 
   #contactTactileGraph { height: clamp(112px, 20vh, 165px); }
 }
 @media (max-width: 760px) {
-  #calib[data-view="calibContact"] { grid-template-columns: minmax(0, 1fr); }
-  #calib[data-view="calibContact"] .calib-recording > label { grid-template-columns: auto minmax(0, 240px); }
+
   .contact-review-header { align-items: flex-start; }
   .contact-review-images figcaption { padding: 5px 6px; }
 }
@@ -940,12 +924,38 @@ body:has(#calib[data-view="calibContact"]:not([hidden])) :is(#notice, #modeTag) 
   display:flex;align-items:center;gap:8px;
 }
 .intake-heading select,.directory-quality > .section-heading select {max-width:min(63vw,330px)}
-.intake-summary {
-  display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;
+.capture-stage-footer {
+  align-items: center;
+  padding: 10px 0 0;
+  background: transparent;
+  color: var(--text);
+  font-size: inherit;
 }
-.intake-summary p {margin:0}
-#intake .clock-only {margin-bottom:12px}
-#intake .calib-nav {padding-top:0}
+.capture-stage-footer p { margin: 0; overflow-wrap: anywhere; }
+.capture-stage-footer .record-cta { margin-inline-start: auto; }
+.exo-optional > summary, .qc-details > summary, .record-directory-options > summary,
+.live-exo-settings > summary { cursor: pointer; font-weight: 600; }
+.exo-optional > summary #exoSummary { float: inline-end; font-size: 12px; font-weight: 400; }
+.exo-optional[open] > summary { margin-bottom: 10px; }
+.exo-selected-list { list-style: none; padding: 0; margin: 8px 0; }
+.exo-selected-video {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 6px 12px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+}
+.exo-selected-video span { min-width: 0; overflow-wrap: anywhere; }
+.exo-selected-video button { flex: none; }
+#intake .clock-only { margin-bottom: 12px; }
+.qc-main { display: flex; align-items: center; justify-content: space-between; gap: 12px 24px; flex-wrap: wrap; }
+.qc-main h3 { margin: 0; font-size: 1.15rem; }
+.qc-main p { margin: 4px 0 0; }
+.qc-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-inline-start: auto; }
+.qc-details[open] > summary { margin-bottom: 12px; }
+.qc-details > .qc-metrics { margin-bottom: 12px; }
+#qcReprocessAction:empty { display: none; }
 #intake .calib-actions-grid {grid-template-columns:repeat(auto-fit,minmax(min(100%,290px),1fr))}
 .exo-file-actions {margin:8px 0}
 .exo-table-fields:not([hidden]) {display:grid;gap:8px}
@@ -953,6 +963,9 @@ body:has(#calib[data-view="calibContact"]:not([hidden])) :is(#notice, #modeTag) 
 #exoSetup :is(#exoStatus,#exoReady):empty {display:none}
 @media(max-width:520px) {
   .capture-tabs .tab {justify-content:start;padding-inline:7px}
+  .record-hero { grid-template-columns: minmax(0, 1fr); }
+  .record-hero .record-cta, .quick-record .record-cta, .capture-stage-footer .record-cta { width: 100%; }
+  .qc-actions { width: 100%; justify-content: space-between; }
   .intake-heading label,.directory-quality > .section-heading label {width:100%}
   .intake-heading select,.directory-quality > .section-heading select {flex:1;max-width:none}
 }

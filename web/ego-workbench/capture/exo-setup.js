@@ -2,18 +2,26 @@
 (() => {
   const session = $('calibSyncSession');
   const rows = $('exoRows');
+  const summary = $('exoSummary');
+  const selectedVideos = $('exoSelectedVideos');
   const status = $('exoStatus');
   const ready = $('exoReady');
   const save = $('processExo');
+  const selectionActions = $('exoSelectionActions');
+  const settings = $('exoCameraSettings');
   const square = $('exoSquareMm');
   const add = $('addExo');
   const videoPicker = $('chooseIntakeVideo');
+  const calibrationPicker = $('chooseIntakeCalibrationVideo');
   const profilePicker = $('chooseIntakeProfile');
+  const reportStatus = $('exoReportStatus');
+  const maxCameras = 8;
   let catalog = {videos:[], profiles:[]};
   let loadedSession = '';
   let saved = {cameras:[], square_mm:25};
   let busy = false;
   let version = 0;
+  let renderedVideos = '';
 
   function select(label, field, options, placeholder) {
     const wrap = document.createElement('label');
@@ -53,36 +61,73 @@
     });
   }
 
-  function selectedPayload() {
-    return choices().filter(row => row.video).map(row => row.payload);
+  function selectedRows(setup = choices()) {
+    return setup.filter(row => row.video);
   }
 
-  function dirty() {
+  function boardSize(selected) {
+    return selected.some(row => !row.timeOnly) ? square.valueAsNumber : saved.square_mm;
+  }
+
+  function dirty(selected = selectedRows()) {
     return session.value === loadedSession && Boolean(loadedSession) &&
-      (JSON.stringify(selectedPayload()) !== JSON.stringify(saved.cameras) || square.valueAsNumber !== saved.square_mm);
+      (JSON.stringify(selected.map(row => row.payload)) !== JSON.stringify(saved.cameras) ||
+       boardSize(selected) !== saved.square_mm);
+  }
+
+  function renderSelected(selected, locked) {
+    const signature = JSON.stringify([loadedSession, locked, selected.map(row => row.payload)]);
+    if (signature === renderedVideos) return;
+    renderedVideos = signature;
+    selectedVideos.hidden = !selected.length;
+    selectedVideos.replaceChildren(...selected.map((row, index) => {
+      const item = document.createElement('li');
+      item.className = 'exo-selected-video';
+      const name = document.createElement('span');
+      name.textContent = row.video;
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'small quiet';
+      remove.textContent = '移除';
+      remove.setAttribute('aria-label', '移除 ' + row.video);
+      remove.disabled = locked;
+      remove.onclick = () => {
+        row.card.querySelector('select[data-field="video"]').value = '';
+        render();
+        const buttons = selectedVideos.querySelectorAll('button');
+        (buttons[index] || buttons[index - 1] || videoPicker).focus();
+      };
+      item.append(name, remove);
+      return item;
+    }));
   }
 
   function render() {
     const setup = choices();
-    const selected = setup.filter(row => row.video);
+    const selected = selectedRows(setup);
     const duplicate = new Set(selected.map(row => row.video)).size !== selected.length;
     const missing = selected.some(row => row.missing);
+    const validSquare = selected.every(row => row.timeOnly) || square.checkValidity();
     const validSession = Boolean(session.value && session.value === loadedSession);
-    save.disabled = busy || !validSession || duplicate || missing || !square.checkValidity() || !dirty();
-    for (const button of [add, videoPicker, profilePicker]) button.disabled = busy || !validSession;
-    add.disabled ||= rows.children.length >= 8;
-    ready.textContent = !session.value ? '请选择录制会话。'
+    const locked = busy || !validSession;
+    const changed = dirty(selected);
+    save.disabled = locked || duplicate || missing || !validSquare || !changed;
+    selectionActions.hidden = !changed;
+    for (const button of [add, videoPicker, calibrationPicker, profilePicker]) button.disabled = locked;
+    add.disabled ||= rows.children.length >= maxCameras;
+    summary.textContent = validSession && selected.length ?
+      (changed ? '待保存 ' : '已添加 ') + selected.length + ' 路' : '';
+    ready.textContent = !session.value ? ''
       : !validSession ? '正在读取已保存的选择…'
       : duplicate ? '每路 EXO 请选择不同的原片。'
-      : missing ? '请选择固定板视频和内参，或改选「仅对时」。'
-      : !square.checkValidity() ? '请输入实测格长。'
-      : dirty() ? '请保存当前 EXO 选择。'
-      : saved.cameras.length ? '已保存 ' + saved.cameras.length + ' 路 EXO。' : '本次可使用头戴双目和手套。';
+      : missing ? '在相机设置中补齐固定板录像和内参。'
+      : !validSquare ? '在相机设置中填写格长。'
+      : '';
     for (const row of setup) {
-      const tableFields = row.card.querySelector('.exo-table-fields');
-      tableFields.hidden = row.timeOnly;
-      for (const input of row.card.querySelectorAll('select')) input.disabled = busy || !validSession;
+      row.card.querySelector('.exo-table-fields').hidden = row.timeOnly;
+      for (const input of row.card.querySelectorAll('select')) input.disabled = locked;
     }
+    renderSelected(validSession ? selected : [], locked);
     updateIntakeProceed();
   }
 
@@ -106,6 +151,7 @@
     });
     rows.append(card);
     fill();
+    return card;
   }
 
   function applySelection(state) {
@@ -122,6 +168,13 @@
     }
   }
 
+  function clearReport() {
+    $('exoReport').hidden = true;
+    $('exoCameraResults').hidden = true;
+    $('exoCameraResults').replaceChildren();
+    reportStatus.textContent = '';
+  }
+
   async function refresh({reload = false} = {}) {
     const id = session.value;
     const request = ++version;
@@ -131,13 +184,16 @@
       rows.replaceChildren();
       appendCamera();
       appendCamera();
+      status.textContent = '';
+      clearReport();
       render();
-      return;
+      return false;
     }
     const needsSelection = reload || loadedSession !== id;
     if (needsSelection) {
       loadedSession = '';
       status.textContent = '';
+      clearReport();
       if (rows.children.length > 2) {
         rows.replaceChildren();
         appendCamera();
@@ -150,31 +206,58 @@
       const [choices, state] = await Promise.all([
         api('/api/exo/options' + query), needsSelection ? api('/api/intake' + query) : null
       ]);
-      if (request !== version || session.value !== id) return;
+      if (request !== version || session.value !== id) return false;
       catalog = choices;
       setCopyableText('exoVideoDirectory', catalog.video_directory);
       setCopyableText('exoProfileDirectory', catalog.profile_directory);
       fill();
       if (state) applySelection(state);
       loadedSession = id;
+      return true;
     } catch (error) {
       if (request === version) status.textContent = error.message;
+      return false;
     } finally {
       if (request === version) render();
     }
   }
 
-  async function pick(field) {
+  function assignOriginals(videos) {
+    let assigned = 0;
+    for (const video of videos) {
+      const empty = [...rows.children].find(card => !card.querySelector('[data-field="video"]').value);
+      const card = empty || (rows.children.length < maxCameras ? appendCamera() : null);
+      if (!card) break;
+      for (const input of card.querySelectorAll('select')) {
+        const field = input.dataset.field;
+        input.value = field === 'video' ? video : field === 'mode' ? 'clock' : '';
+      }
+      assigned++;
+    }
+    return assigned;
+  }
+
+  async function pick(field, assign = false) {
+    const id = session.value;
+    const knownVideos = new Set(catalog.videos);
     busy = true;
     render();
-    status.textContent = '在电脑上选择要导入的档案。';
+    status.textContent = '请选择文件。';
     try {
-      await post('/api/intake/files', {session_id:session.value, field});
-      await refresh();
+      await post('/api/intake/files', {session_id:id, field});
+      if (id !== session.value || !await refresh()) return;
       refreshQrVideos();
-      status.textContent = '在 EXO 卡片选择对应文件。';
+      if (assign) {
+        const imported = catalog.videos.filter(label => !knownVideos.has(label) && label.includes('本次导入 '));
+        const assigned = assignOriginals(imported);
+        status.textContent = assigned < imported.length
+          ? '最多可选 ' + maxCameras + ' 路。可在相机设置中更换原片。'
+          : !assigned && catalog.videos.length ? '已有素材可在相机设置中选择。' : '';
+      } else {
+        status.textContent = '可在对应相机的设置中选用。';
+      }
     } catch (error) {
-      status.textContent = error.message;
+      if (id === session.value) status.textContent = error.message;
     } finally {
       busy = false;
       render();
@@ -184,17 +267,15 @@
   async function loadReport() {
     const id = session.value;
     if (!id) return;
+    clearReport();
     const link = $('exoReport');
     const results = $('exoCameraResults');
-    link.hidden = true;
-    results.hidden = true;
-    results.replaceChildren();
     try {
       const path = '/api/exo/result?' + new URLSearchParams({id});
       const report = await api(path);
       if (id !== session.value) return;
       if (report.status !== 'processed') {
-        status.textContent = '这条会话还没有 EXO 处理结果。';
+        reportStatus.textContent = '这条会话还没有 EXO 处理结果。';
         return;
       }
       link.href = capturePath(path);
@@ -208,43 +289,46 @@
         results.append(row);
       }
       results.hidden = false;
-      status.textContent = 'EXO 对齐结果';
     } catch (error) {
-      if (id === session.value) status.textContent = error.message;
+      if (id === session.value) reportStatus.textContent = error.message;
     }
   }
 
   save.onclick = async () => {
     if (save.disabled) return;
     const id = session.value;
-    const cameras = selectedPayload();
-    const square_mm = square.valueAsNumber;
+    const selected = selectedRows();
+    const cameras = selected.map(row => row.payload);
+    const square_mm = boardSize(selected);
     busy = true;
     render();
     try {
       const result = await post('/api/intake', {session_id:id, cameras, square_mm});
       if (id === session.value) {
         applySelection(result);
-        status.textContent = 'EXO 选择已保存。';
+        status.textContent = '';
         refreshIntakeStatus();
       }
     } catch (error) {
-      status.textContent = error.message;
+      if (id === session.value) status.textContent = error.message;
     } finally {
       busy = false;
       render();
+      if (id === session.value && selectionActions.hidden) videoPicker.focus();
     }
   };
 
   add.onclick = () => { appendCamera(); render(); };
-  videoPicker.onclick = () => pick('exo_video_files');
+  videoPicker.onclick = () => pick('exo_video_files', true);
+  calibrationPicker.onclick = () => pick('exo_video_files');
   profilePicker.onclick = () => pick('exo_profile_files');
   $('refreshExo').onclick = () => refresh();
   $('readExoReport').onclick = loadReport;
   square.oninput = render;
+  settings.addEventListener('toggle', () => { if (settings.open && !busy && session.value && loadedSession !== session.value) refresh(); });
   window.refreshIntakeExo = refresh;
   window.refreshExoReadiness = render;
-  window.intakeExoDirty = dirty;
+  window.intakeExoDirty = () => busy || dirty();
   window.renderExoJob = job => {
     if (job.session_id === session.value && job.status === 'complete') loadReport();
   };

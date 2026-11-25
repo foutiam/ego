@@ -635,6 +635,13 @@ class Application:
         path = self.intake_path(folder)
         return read_json(path) if path.is_file() else {}
 
+    @staticmethod
+    def intake_versions(selection, checks):
+        from ego_capture.contact_calibration import PARTS
+
+        return dict(exo=selection.get('selection_saved_at_ns', 0),
+                    **{part: checks.get(part, {}).get('saved_at_ns', 0) for part in PARTS})
+
     def intake_status(self, folder):
         from ego_capture.contact_calibration import PARTS, review_notes
 
@@ -647,11 +654,17 @@ class Application:
         exo_results = [dict(role=camera['role'], mode=camera['validation']['status'],
                             residual_ms=camera['clock']['median_abs_residual_ms'],
                             holdout_rms_px=camera['validation'].get('holdout_rms_px')) for camera in cameras]
+        quality = folder / 'derived/quality.json'
         tactile_status = None
-        if contact and (folder / 'derived/quality.json').is_file():
-            from ego_capture.contact_calibration import timing_for_recording
-            tactile_status = timing_for_recording(folder, meta)[0]['status']
-        return dict(session_id=folder.name, contact=contact,
+        needs_reprocess = False
+        if quality.is_file():
+            versions = self.intake_versions(selection, checks)
+            published = read_json(quality).get('intake_versions', {})
+            needs_reprocess = any(revision != published.get(name, 0) for name, revision in versions.items())
+            if contact and not needs_reprocess:
+                from ego_capture.contact_calibration import timing_for_recording
+                tactile_status = timing_for_recording(folder, meta)[0]['status']
+        return dict(session_id=folder.name, contact=contact, needs_reprocess=needs_reprocess,
                     checks={part:checks.get(part, {}).get('status') for part in PARTS} if contact else {},
                     cameras=selection.get('cameras', []), square_mm=selection.get('square_mm', 25),
                     aligned_exo=bool(exo_results), exo_results=exo_results, tactile_status=tactile_status,
@@ -681,7 +694,9 @@ class Application:
             if (self.job or {}).get('status') == 'running':
                 raise ValueError('处理任务运行中，请在完成后保存选择')
             checked = list(checked_setup(cameras, self.exo_videos(folder.name), self.exo_intrinsics(folder.name))) if cameras else []
-            selection = dict(self.intake(folder), cameras=checked, square_mm=square_mm)
+            selection = self.intake(folder)
+            if (checked, square_mm) != (selection.get('cameras', []), selection.get('square_mm', 25)):
+                selection.update(cameras=checked, square_mm=square_mm, selection_saved_at_ns=time.time_ns())
             path = self.intake_path(folder)
             path.parent.mkdir(parents=True, exist_ok=True)
             dump_json(path, selection)
@@ -700,10 +715,13 @@ class Application:
         return self.intake_status(session)
 
     def finalize_intake(self, session, selection, progress):
+        from ego_capture.contact_calibration import review_notes
         from ego_capture.exo_calibration import process_exo
         from ego_capture.qr_sync import analyze_recording
 
+        versions = self.intake_versions(selection, review_notes(session))
         qc = process_session(session, self.config, progress, publish_quality=False)
+        qc['intake_versions'] = versions
         if self.automatic_alignment(session) is None:
             progress('正在扫描录制的相机二维码')
             analyze_recording(session, progress)
@@ -713,15 +731,23 @@ class Application:
                         self.config['minimum_free_bytes'], progress,
                         measured_square_mm=selection['square_mm'],
                         video_catalog=self.exo_videos(session.name), profile_catalog=self.exo_intrinsics(session.name))
+        elif selection.get('selection_saved_at_ns'):
+            report = session / 'derived/exo-session.json'
+            if report.is_file():
+                report.replace(report.with_name(f'exo-session-{time.time_ns()}.json'))
         dump_json(session / 'derived/quality.json', qc)
         return qc
 
     def prepare_recording(self, session, progress, *, reprocess=False):
+        from ego_capture.contact_calibration import review_notes
         from ego_capture.qr_sync import analyze_recording
 
         quality = session / 'derived/quality.json'
-        if reprocess or not quality.is_file():
-            qc = process_session(session, self.config, progress)
+        publish = reprocess or not quality.is_file()
+        if publish:
+            versions = self.intake_versions(self.intake(session), review_notes(session))
+            qc = process_session(session, self.config, progress, publish_quality=False)
+            qc['intake_versions'] = versions
         else:
             qc = read_json(quality)
         if read_json(session / 'metadata.json').get('contact_calibration'):
@@ -731,6 +757,8 @@ class Application:
         if reprocess or self.automatic_alignment(session) is None:
             progress('基础整理完成，正在扫描各路二维码…')
             analyze_recording(session, progress)
+        if publish:
+            dump_json(quality, qc)
         return qc
 
     def dispatch_recording_qc(self):
@@ -1556,7 +1584,8 @@ class CaptureRoutes:
                 if status['needs_review']:
                     raise ValueError('请在 02 导入与复核确认或跳过任务前后对帧')
                 selection = app.intake(p)
-                if read_json(p / 'metadata.json').get('capture_intake_required') or selection.get('cameras'):
+                if (read_json(p / 'metadata.json').get('capture_intake_required')
+                        or selection.get('cameras') or selection.get('selection_saved_at_ns')):
                     process = lambda progress: app.finalize_intake(p, selection, progress)
                 else:
                     process = lambda progress: app.prepare_recording(p, progress, reprocess=True)

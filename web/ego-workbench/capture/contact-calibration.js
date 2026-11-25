@@ -27,7 +27,7 @@
     const option = $('contactCalibrationOption');
     option.hidden = !supported || Boolean(state?.recording);
     $('contactCalibrationEnabled').disabled = recordStartPending;
-    $('calibContactTab').hidden = !supported;
+    $('liveRecordOptions').hidden = option.hidden;
     const guide = phaseGuide[state?.recording?.contact_phase];
     $('liveContactCalibration').hidden = !guide;
     if (!guide) return;
@@ -203,8 +203,7 @@
     $('contactReviewFrames').hidden = !hasPair;
     $('contactReviewTactile').hidden = !hasPair || !data?.touch?.length;
     $('contactSkip').disabled = !enabledForSession || saving;
-    $('contactOpenTask').disabled = !enabledForSession || saving || Boolean(window.intakeExoDirty?.()) ||
-      ['before', 'after'].some(part => !['pair_confirmed', 'skipped'].includes(data?.checks?.[part]?.status));
+
     if (!hasPair) {
       drawTouch();
       return;
@@ -223,7 +222,7 @@
   }
 
   async function load({force = false, completedSession = null} = {}) {
-    if ($('calibContactTab').hidden || $('intake').hidden || $('calibContact').hidden) return;
+    if ($('intake').hidden || $('calibContact').hidden) return;
     $('retryContactPreview').hidden = true;
     const id = $('calibSyncSession').value;
     const part = currentPart();
@@ -299,10 +298,19 @@
     saving = true;
     showFrame();
     try {
-      await post('/api/contact-calibration/review', payload);
+      const result = await post('/api/contact-calibration/review', payload);
+      let refresh;
+      if ($('calibSyncSession').value === session_id && currentPart() === part) {
+        const afterStatus = data?.checks?.after?.status;
+        if (part === 'before' && ['pair_confirmed', 'skipped'].includes(result.status) &&
+            !['pair_confirmed', 'skipped'].includes(afterStatus)) {
+          parts.find(input => input.value === 'after').checked = true;
+        }
+        refresh = load({force:true});
+      }
       refreshIntakeStatus();
       notifyEgoCaptureUpdated();
-      if ($('calibSyncSession').value === session_id && currentPart() === part) await load({force:true});
+      await refresh;
     } catch (error) {
       showStatus(error.message);
     } finally {
@@ -351,12 +359,11 @@
     await chooseSession(id, 'intake');
     $('calibSyncSession').value = id;
     if (firstPart) parts[0].checked = true;
-    $('calibContactTab').click();
     $('contactReviewTitle').focus();
     await load();
   };
   $('reviewContactCalibration').onclick = () => window.openContactCalibration(reviewSessionId).catch(error => toast(error.message));
-  $('contactOpenTask').onclick = () => openQuality($('calibSyncSession').value).catch(error => toast(error.message));
+
   $('retryContactPreview').onclick = async () => {
     const button = $('retryContactPreview');
     button.disabled = true;
