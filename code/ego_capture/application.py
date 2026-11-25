@@ -33,6 +33,7 @@ from visuotactile.pipeline import (process_session, build_dataset,        # noqa
                                    read_jsonl, validate_annotations)
 from visuotactile.storage import session_path, dump_json                  # noqa: E402
 
+from ego_capture import station_paths
 from ego_capture.station_devices import StationDevices                # noqa: E402
 
 WEB = ROOT / 'web/ego-workbench/capture'
@@ -87,10 +88,11 @@ def _log_origin_rejection(diag):
 
 class Application:
     def __init__(self, config_path=CONFIG, *, port=8793, standalone=False, connect_devices=True):
-        self.config_path = Path(config_path)
-        self.config = read_json(config_path)
+        self.config_path = Path(config_path).resolve()
+        self.config = read_json(self.config_path)
+        self.active_path_values = station_paths.values(self.config)
         self.config['port'] = port
-        base = self.config_path.resolve().parent if standalone else ROOT
+        base = self.config_base = self.config_path.parent if standalone else ROOT
         self.standalone = standalone
         self.connect_devices = connect_devices
         self.qr_phone_url = None
@@ -126,6 +128,24 @@ class Application:
         self.queue_interrupted_alignment()
         if connect_devices:
             self.devices.launch()
+
+    def path_settings(self):
+        saved = station_paths.values(read_json(self.config_path))
+        effective = dict(output_root=str(self.root), import_root=str(self.inbox),
+                         export_root=str(self.export_root), exo_video_root=str(self.exo_root),
+                         exo_profile_root=str(self.exo_profiles),
+                         qnbot_runtime_python=self.config.get('qnbot_runtime_python') or '',
+                         replay_source=self.config.get('replay_source') or '')
+        return dict(values=saved, effective=effective, base=str(self.config_base),
+                    restartRequired=saved != self.active_path_values)
+
+    def save_paths(self, updates):
+        with self.lock:
+            current = read_json(self.config_path)
+            updated = station_paths.update(current, updates, self.config_base)
+            if updated != current:
+                dump_json(self.config_path, updated)
+        return self.path_settings()
 
     def segments(self):
         from workflow_segments import Segments
@@ -702,6 +722,19 @@ class Application:
             'note': 'VID/PID 仅识别为通用 STM32 串口设备；厂牌、通道到手指映射与 IMU 有无待实测确认。'}
         return report
 
+    @staticmethod
+    def recorded_device_report(setup):
+        from ego_capture.camera_calibration import device_calibration_report
+
+        if not isinstance(setup, dict) or not isinstance(setup.get('reported'), dict):
+            raise ValueError('请选择 Ego 会话中的 calibration.json')
+        report = device_calibration_report(setup['reported'], setup.get('reported_transforms') or {},
+                                           setup.get('camera_identity') or {},
+                                           eye_assignment=setup.get('eye_assignment'))
+        report.update(touch_baseline=setup.get('touch_baseline') is not None,
+                      channel_map_source=setup.get('touch_channel_map_source') or '未记录')
+        return report
+
     def device_report(self):
         """Real serial devices vs virtual cameras are distinguishable paths."""
         from serial.tools import list_ports
@@ -989,8 +1022,13 @@ class CaptureRoutes:
                 except ValueError:
                     raise ValueError('cursor must be an integer')
                 return self.send(200, app.devices.drain_touch(cursor))
+            if path == '/api/settings/paths':
+                return self.send(200, app.path_settings())
             if path == '/api/calibration':
                 return self.send(200, app.calibration_report())
+            if path == '/api/calibration/recorded-device':
+                folder = app.closed_session_path(query.get('id', [''])[0])
+                return self.send(200, app.recorded_device_report(read_json(folder / 'calibration.json')))
             if path == '/api/devices':
                 return self.send(200, app.device_report())
             if path == '/api/probe/report':
@@ -1179,7 +1217,8 @@ class CaptureRoutes:
                 image = app.review_frame_path(query.get('id', [''])[0], relative)
                 return self.send(200, image.read_bytes(), 'image/jpeg')
             if path in ('/', '/index.html', '/app.js', '/style.css', '/guided-capture.js',
-                        '/review_event_view.js', '/recorded-hand-view.js', '/exo-setup.js', '/contact-calibration.js'):
+                        '/review_event_view.js', '/recorded-hand-view.js', '/exo-setup.js', '/contact-calibration.js',
+                        '/station-paths.js'):
                 p = WEB / ('index.html' if path == '/' else path[1:])
                 return self.send(200, p.read_bytes(),
                                  (mimetypes.guess_type(p.name)[0] or 'text/plain') + '; charset=utf-8')
@@ -1238,7 +1277,13 @@ class CaptureRoutes:
                 raise ValueError('Request too large')
             data = json.loads(self.rfile.read(size) or b'{}')
             dev = app.devices
-            if path == '/api/live/source':
+            if path == '/api/settings/paths':
+                result = app.save_paths(data)
+            elif path == '/api/settings/choose-path':
+                result = {'paths': station_paths.choose(data.get('field'), app.config_base, data.get('current', ''))}
+            elif path == '/api/calibration/recorded-device':
+                result = app.recorded_device_report(data)
+            elif path == '/api/live/source':
                 if not app.connect_devices:
                     raise ValueError('当前为离线整理模式')
                 role, source = data.get('role'), data.get('source', '')

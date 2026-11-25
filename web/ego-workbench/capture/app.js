@@ -2457,6 +2457,7 @@ async function loadSessions({refreshDetail = false} = {}) {
   const previous = selectedSessionId;
   sessions = (await api('/api/sessions')).filter(session => session.status !== 'recording');
   window.guidedCapture?.setSessions(sessions);
+  window.capturePathSettings?.setSessions(sessions);
   if (requestedReviewSession) {
     selectedSessionId = requestedReviewSession;
     requestedReviewSession = null;

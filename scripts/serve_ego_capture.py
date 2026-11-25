@@ -83,16 +83,30 @@ class CaptureHandler(CaptureRoutes, BaseHTTPRequestHandler):
         pass
 
 
+def workstation_config(config):
+    if config is not None:
+        return config
+    default = ROOT / 'capture.local.json'
+    if not default.exists():
+        template = (ROOT / 'configs/ego-capture.example.json').read_bytes()
+        try:
+            with default.open('xb') as stream:
+                stream.write(template)
+        except FileExistsError:
+            pass
+    return default
+
+
 def main():
     parser = ArgumentParser(description=__doc__)
-    parser.add_argument('--config', type=Path, required=True)
+    parser.add_argument('--config', type=Path, help='工作站配置，默认使用解压目录中的 capture.local.json')
     parser.add_argument('--port', type=int, default=8793)
     from serve_ego_qr_clock import add_phone_qr_arguments, phone_qr
     add_phone_qr_arguments(parser)
     parser.add_argument('--offline', action='store_true', help='仅处理已保存录制，不打开串口')
     args = parser.parse_args()
     with ThreadingHTTPServer(('127.0.0.1', args.port), CaptureHandler) as server:
-        app = Application(args.config, port=server.server_port, standalone=True, connect_devices=not args.offline)
+        app = Application(workstation_config(args.config), port=server.server_port, standalone=True, connect_devices=not args.offline)
         server.app = app
         inbox = IncomingRecordings(app.inbox)
 

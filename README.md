@@ -14,18 +14,20 @@
 
 1. 用有仓库权限的 GitHub 账号打开项目，点 **Code → Download ZIP** 并解压。在包含 README 的文件夹打开 PowerShell。[GitHub 仓库](https://github.com/foutiam/ego)
 2. 安装 64 位 Python 3.11。下面第一行应打印 `Python 3.11.x`。如果使用 Conda 或便携版且找不到 `py`，把前两行中的 `py -3.11` 换成 `& '你的目录/python.exe'`。[Python Windows 下载](https://www.python.org/downloads/windows/)
-3. 安装依赖并复制一份本机配置。
+3. 创建 Python 环境并安装依赖。
 
 ```powershell
 py -3.11 --version
 py -3.11 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r configs\ego-capture-requirements.txt
-Copy-Item configs\ego-capture.example.json .\capture.local.json
+
 ```
 
 ### 选择自己的保存位置和档案
 
-打开 `capture.local.json`，只改需要的路径。配置文件也可以放在自己的目录，启动时把路径传给 `--config`。支持不同盘符、带空格的目录和相对路径。相对路径从这个配置文件所在目录算起。Windows 路径建议用 `/`，例如 `F:/Lab/Ego Recordings`。
+打开 **录制目录 → 路径设置**。第一次录制也可以从「录制保存位置」进入。首次启动会自动在解压目录创建本机设置，默认把录制、导入、导出和 EXO 档案目录放在解压目录下的 `recordings/`。
+
+点各路径旁的 **浏览** 或 **添加**，选择自己的文件夹或文件。也可以直接粘贴路径。选择不同盘符、带空格或中文的目录都可以。相对路径从本机设置文件所在目录算起。
 
 | 配置项 | 用途 | 默认位置 |
 | --- | --- | --- |
@@ -38,22 +40,24 @@ Copy-Item configs\ego-capture.example.json .\capture.local.json
 | `exo_profile_files` | 单独列出分散存放的 EXO 内参 JSON | 空列表 |
 | `qnbot_runtime_python` | 本机 QnBot OpenXR 环境的 `python.exe` | 留空 |
 
-只改 `output_root` 时，其他未单独设置的目录会随它移动。如果旧配置里已经写了某个目录，它会沿用该值。已录制的数据仍在原目录，换路径后可以通过「导入已有 Ego 会话」迁移需要的会话。EXO 文件分散存放时，把各文件完整路径填进对应列表，例如 `"exo_profile_files": ["G:/Lab/Calibrations/left.json", "H:/Right/cam.json"]`，列表里的文件无需搬动。
+只改录制目录时，留空的导入、导出和 EXO 目录会随它移动。已有录制仍在原目录，可通过「导入已有 Ego 会话」迁移需要的会话。分散存放的 EXO 文件可以单独添加，源文件无需移动。
 
-保存配置并重启工作台。网页底部「数据保存位置」显示实际录制目录，导入和 EXO 面板各自显示本机目录。点「刷新文件」后，在下拉框选择视频和内参。导出后会显示完整 ZIP 路径。
+点 **保存路径**。等当前录制和处理任务完成后，在启动窗口按 Ctrl+C，再运行原启动命令。网页底部「数据保存位置」会显示生效的录制目录。导入与 EXO 面板显示各自的目录，导出后会显示完整 ZIP 路径。需要携带整套工作站设置时，可用 `--config` 指定自己的配置文件。
 
 ## 2. 启动并检查设备
 
 1. 电脑运行 `ipconfig`，找到连接手机所在 Wi‑Fi 的网卡 IPv4 地址。即使电脑同时接网线，也选手机能访问的那张网卡。用实际地址替换下面的示例值，再启动。
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\serve_ego_capture.py --config capture.local.json --qr-bind 192.168.1.23
+.\.venv\Scripts\python.exe scripts\serve_ego_capture.py --qr-bind 192.168.1.23
 ```
 
 2. **电脑**打开终端打印的「采集工作台」，默认 `http://127.0.0.1:8793/ego-capture/`。**手机**打开终端打印的「手机二维码」，例如 `http://192.168.1.23:8765/`。手机页可切换「二维码」「标定板」「同时显示」。正式对时用二维码模式，画面里的码更大。
 3. 打开 **录制目录 → 实时录制**。先用自动识别。画面或触觉没有更新时，用各卡片下方的「双目串口」「手套串口」「视频来源」选择正确设备。双目左右不确定时，遮一下实际左镜头，在 **标定与同步 → 当前设备标定** 保存对应关系。
-4. 活动手指再轻压一下，确认手套触觉小图有响应。采集骨架时也确认「骨架有输出」。需要 OpenXR 的工作站在配置的 `qnbot_runtime_python` 填实验室配套运行环境的 `python.exe`，按「当前设备标定」提示标定。3 秒静置基线在「更多录制工具」内，需要基线校正时再采。[QnBot 文档](https://docs.qnbot.com/zh-CN)
+4. 活动手指再轻压一下，确认手套触觉小图有响应。采集骨架时也确认「骨架有输出」。需要 OpenXR 时，在「当前设备标定 → 设备参数与校验状态」点「设置 EXO 与手套档案」，浏览并选择配套环境的 `python.exe`。重启后按「当前设备标定」提示标定。3 秒静置基线在「更多录制工具」内，需要基线校正时再采。[QnBot 文档](https://docs.qnbot.com/zh-CN)
 5. 在 **标定与同步 → 二维码对时 → 固定 EXO 相机** 下载 ChArUco 板，按 100% 打印，实测格长并固定在平桌面。每台 EXO 固定位置、分辨率和镜头设置，拍几秒清晰的桌面板，保证操作区和拿放动作在画面内。已有与机位视频设置匹配的内参 JSON 就复用，缺内参时另外从不同距离和角度拍一段板，再把板放回桌面固定位置。要用手机显示标定板时，锁定显示模式和方向、实测格长，页面接受 15–40 mm。
+
+「设备参数与校验状态」可切换查看当前设备或已保存的录制会话，也可点「打开标定档案」查看以前的 Ego `calibration.json`。它按档案原有证据显示设备参数，查看档案不会修改当前设备。要用于 EXO 计算的镜头内参 JSON，在 EXO 面板选取。
 
 ## 3. 录一条短拿放
 

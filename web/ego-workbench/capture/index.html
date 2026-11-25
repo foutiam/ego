@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ego · 双目与手套采集</title><link rel="stylesheet" href="./style.css?v=contact-offset-preview"></head>
+<title>Ego · 双目与手套采集</title><link rel="stylesheet" href="./style.css?v=station-paths-1"></head>
 <body>
 <nav id="standaloneLinks" class="capture-tools release-links" aria-label="工作台" hidden>
   <a href="/ego-capture/" aria-current="page">采集与处理</a>
@@ -27,13 +27,13 @@
     <p>确认双目和手套后，在实时录制里开始。停止保存后，工作台会自动整理会话。</p>
   </div>
   <ol aria-label="录制步骤">
-    <li><button id="firstCaptureCalibration" type="button" class="small">设备标定</button></li>
+    <li><button type="button" class="small" data-open-capture-paths="storage">录制保存位置</button></li><li><button id="firstCaptureCalibration" type="button" class="small">设备标定</button></li>
     <li>实时录制</li><li>整理与选段</li>
   </ol>
 </section>
 <div class="section-heading" id="directoryHeading"><div><h2>录制目录</h2></div>
 <div class="toolbar directory-actions">
-<button type="button" id="refreshSessions" class="small">刷新</button>
+<button type="button" class="small" data-open-capture-paths="storage">路径设置</button><button type="button" id="refreshSessions" class="small">刷新</button>
 <button type="button" id="captureLive" class="small primary" aria-expanded="false" aria-controls="live">实时录制</button>
 </div></div>
 <details id="importPanel" class="card directory-import">
@@ -360,9 +360,21 @@
 </article>
 </div>
 <details class="card calib-diagnostics"><summary>设备参数与校验状态</summary>
-<div id="calibPanels" class="calib-grid"></div>
-<details><summary>完整校验条件</summary><div id="calibWizard" class="muted"></div>
-<ul id="calibUnverified" class="muted"></ul></details></details>
+<div class="toolbar calibration-evidence-tools">
+  <label>查看来源 <select id="deviceEvidenceSource"><option value="">当前连接设备</option></select></label>
+  <input id="deviceEvidenceFile" type="file" accept=".json,application/json" hidden>
+  <button type="button" id="openDeviceEvidenceFile" class="small">打开标定档案</button>
+  <button type="button" class="small" data-open-capture-paths="calibration">设置 EXO 与手套档案</button>
+</div>
+<div id="liveDeviceEvidence">
+  <div id="calibPanels" class="calib-grid"></div>
+  <details><summary>完整校验条件</summary><div id="calibWizard" class="muted"></div>
+  <ul id="calibUnverified" class="muted"></ul></details>
+</div>
+<div id="savedDeviceEvidence" hidden>
+  <p id="deviceEvidenceStatus" class="muted" role="status"></p>
+  <div id="deviceEvidenceItems" class="calib-grid"></div>
+</div></details>
 </div>
 
 <section id="calibContact" class="calib-pane" aria-labelledby="contactReviewTitle" hidden>
@@ -509,8 +521,62 @@
 </main>
 <footer><span>原始录制与处理结果保存在本机</span>
 <details><summary>数据保存位置</summary><div class="directory-path"><code id="outputPath"></code><button type="button" class="small quiet" data-copy-text="outputPath" disabled>复制路径</button></div></details></footer>
+<dialog id="capturePathDialog" class="capture-path-dialog" aria-labelledby="capturePathTitle">
+<form id="capturePathForm">
+  <div class="card-title"><h2 id="capturePathTitle">路径设置</h2><button type="button" id="closeCapturePaths" class="small">关闭</button></div>
+  <div class="capture-path-fields">
+    <label for="captureOutputRoot">录制保存目录</label>
+    <input id="captureOutputRoot" name="output_root" required spellcheck="false" autocomplete="off">
+    <button type="button" class="small" data-browse-path="output_root" aria-label="浏览录制保存目录">浏览</button>
+  </div>
+  <p id="activeCapturePath" class="muted capture-path-active"></p>
+  <details id="captureImportPaths" class="compact-details">
+    <summary>导入与导出</summary>
+    <div class="capture-path-fields">
+      <label for="captureImportRoot">会话导入目录</label>
+      <input id="captureImportRoot" name="import_root" spellcheck="false" autocomplete="off">
+      <button type="button" class="small" data-browse-path="import_root" aria-label="浏览会话导入目录">浏览</button>
+      <label for="captureExportRoot">ZIP 导出目录</label>
+      <input id="captureExportRoot" name="export_root" spellcheck="false" autocomplete="off">
+      <button type="button" class="small" data-browse-path="export_root" aria-label="浏览 ZIP 导出目录">浏览</button>
+    </div>
+  </details>
+  <details id="captureCalibrationPaths" class="compact-details">
+    <summary>EXO 与手套档案</summary>
+    <div class="capture-path-fields">
+      <label for="captureExoVideoRoot">EXO 视频目录</label>
+      <input id="captureExoVideoRoot" name="exo_video_root" spellcheck="false" autocomplete="off">
+      <button type="button" class="small" data-browse-path="exo_video_root" aria-label="浏览 EXO 视频目录">浏览</button>
+      <label for="captureExoProfileRoot">EXO 内参目录</label>
+      <input id="captureExoProfileRoot" name="exo_profile_root" spellcheck="false" autocomplete="off">
+      <button type="button" class="small" data-browse-path="exo_profile_root" aria-label="浏览 EXO 内参目录">浏览</button>
+      <label for="captureExoVideoFiles">单独添加视频</label>
+      <textarea id="captureExoVideoFiles" name="exo_video_files" rows="2" placeholder="每行一个文件路径" spellcheck="false"></textarea>
+      <button type="button" class="small" data-browse-path="exo_video_files" aria-label="选择 EXO 视频文件">添加</button>
+      <label for="captureExoProfileFiles">单独添加内参</label>
+      <textarea id="captureExoProfileFiles" name="exo_profile_files" rows="2" placeholder="每行一个 JSON 文件路径" spellcheck="false"></textarea>
+      <button type="button" class="small" data-browse-path="exo_profile_files" aria-label="选择 EXO 内参文件">添加</button>
+      <label for="captureQnbotRuntime">QnBot 运行环境</label>
+      <input id="captureQnbotRuntime" name="qnbot_runtime_python" placeholder="可选 · python.exe" spellcheck="false" autocomplete="off">
+      <button type="button" class="small" data-browse-path="qnbot_runtime_python" aria-label="选择 QnBot 运行环境">浏览</button>
+    </div>
+  </details>
+  <details class="compact-details">
+    <summary>离线回放</summary>
+    <div class="capture-path-fields">
+      <label for="captureReplayFile">原始相机流</label>
+      <input id="captureReplayFile" name="replay_source" placeholder="可选 · camera.bin" spellcheck="false" autocomplete="off">
+      <button type="button" class="small" data-browse-path="replay_source" aria-label="选择原始回放文件">浏览</button>
+    </div>
+  </details>
+  <div class="capture-path-footer">
+    <p id="capturePathStatus" role="status" class="muted"></p>
+    <button id="saveCapturePaths" type="submit" class="primary" disabled>保存路径</button>
+  </div>
+</form>
+</dialog>
 <div id="toast" role="alert" class="toast hidden"></div>
 <script src="./review_event_view.js?v=contact-task-alignment"></script>
 <script src="./recorded-hand-view.js?v=capture-review-20261116-4"></script>
 <script src="./qr-renderer.js"></script><script src="./qr-timecode.js?v=4"></script>
-<script src="./app.js?v=contact-task-alignment"></script><script src="./guided-capture.js?v=capture-review-20261116-4"></script><script src="./exo-setup.js?v=live-sources-1"></script><script src="./contact-calibration.js?v=9"></script></body></html>
+<script src="./app.js?v=station-paths-1"></script><script src="./guided-capture.js?v=capture-review-20261116-4"></script><script src="./exo-setup.js?v=live-sources-1"></script><script src="./contact-calibration.js?v=9"></script><script src="./station-paths.js?v=1"></script></body></html>

@@ -902,3 +902,28 @@ body:has(#calib[data-view="calibContact"]:not([hidden])) :is(#notice, #modeTag) 
   .contact-review-actions { width: 100%; }
   .contact-review-actions .primary { flex: 1; }
 }
+
+.capture-path-dialog {
+  width:min(680px,calc(100vw - 28px));max-height:calc(100dvh - 28px);
+  overflow:auto;padding:18px 20px;border:1px solid var(--line);border-radius:10px;
+  background:var(--panel);color:var(--text);
+}
+.capture-path-dialog::backdrop {background:#050a10ac}
+.capture-path-dialog h2 {margin:0;font-size:20px}
+.capture-path-fields {
+  display:grid;grid-template-columns:9em minmax(0,1fr) auto;gap:10px;
+  align-items:center;margin-top:12px;
+}
+.capture-path-fields :is(input,textarea) {width:100%;min-width:0;resize:vertical}
+.capture-path-active {margin:8px 0 12px;overflow-wrap:anywhere}
+.capture-path-dialog details {margin-top:9px;padding:8px 10px}
+.capture-path-footer {display:flex;align-items:center;gap:12px;justify-content:space-between;margin-top:15px}
+.capture-path-footer p {margin:0;overflow-wrap:anywhere}
+.capture-path-footer button {margin-left:auto;white-space:nowrap}
+.calibration-evidence-tools {margin:10px 0}
+#savedDeviceEvidence[hidden],#liveDeviceEvidence[hidden] {display:none}
+@media(max-width:520px) {
+  .capture-path-dialog {padding:13px}
+  .capture-path-fields {grid-template-columns:minmax(0,1fr) auto;gap:6px}
+  .capture-path-fields label {grid-column:1 / -1}
+}
