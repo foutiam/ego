@@ -214,3 +214,81 @@
     }
   }};
 })();
+
+(() => {
+  'use strict';
+
+  const panel = $('exoStationCalibration');
+  const square = $('exoStationSquare');
+  const add = $('exoStationAddProfiles');
+  const save = $('exoStationSaveSquare');
+  const listing = $('exoStationProfiles');
+  const feedback = $('exoStationStatus');
+  let savedSquare = null;
+  let busy = false;
+
+  function updateControls() {
+    square.disabled = busy || savedSquare === null;
+    add.disabled = busy || savedSquare === null;
+    save.disabled = square.disabled || !square.validity.valid || square.valueAsNumber === savedSquare;
+  }
+
+  function showStatus(message = '') {
+    feedback.textContent = message;
+    feedback.hidden = !message;
+  }
+
+  function render(result) {
+    savedSquare = result.square_mm;
+    square.value = savedSquare;
+    const profiles = result.profiles;
+    const summary = [savedSquare + ' mm'];
+    if (profiles.length) summary.push(profiles.length + ' 份内参');
+    $('exoStationSummary').textContent = summary.join(' · ');
+    $('exoStationProfilesEmpty').hidden = profiles.length > 0;
+    listing.hidden = !profiles.length;
+    listing.replaceChildren(...profiles.map(profile => {
+      const row = document.createElement('li');
+      const name = document.createElement('strong');
+      name.textContent = profile.label;
+      const metadata = document.createElement('span');
+      metadata.className = 'muted';
+      metadata.textContent = profile.image_size.join(' × ') + ' · ' + (profile.model === 'fisheye' ? '鱼眼' : '针孔');
+      row.append(name, metadata);
+      return row;
+    }));
+  }
+
+  async function update(load, waiting, complete) {
+    if (busy) return;
+    busy = true;
+    showStatus(waiting);
+    updateControls();
+    try {
+      const result = await load();
+      render(result);
+      showStatus(complete?.(result));
+      if (complete) window.refreshIntakeExo?.();
+    } catch (error) {
+      showStatus(error.message);
+    } finally {
+      busy = false;
+      updateControls();
+    }
+  }
+
+  panel.addEventListener('toggle', () => {
+    if (panel.open) update(() => api('/api/exo/station'), '正在读取 EXO 标定…');
+  });
+  square.addEventListener('input', updateControls);
+  $('exoStationBoardForm').addEventListener('submit', event => {
+    event.preventDefault();
+    if (save.disabled) return;
+    update(() => post('/api/exo/station', {square_mm:square.valueAsNumber}),
+      '正在保存格长…', () => '已保存格长');
+  });
+  add.onclick = () => update(() => post('/api/exo/station/profiles', {}),
+    '请在本机窗口选择内参 JSON。', result => result.added.length
+      ? '已添加 ' + result.added.length + ' 份内参'
+      : result.selected ? '所选内参已在档案库中' : '');
+})();

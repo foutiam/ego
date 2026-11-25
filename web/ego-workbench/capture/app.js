@@ -156,8 +156,8 @@ function renderQualityJob(job, pending = false) {
   const busy = pending || ownJob?.status === 'running';
   const failed = ownJob?.status === 'failed';
   const currentIntake = intakeStatus?.session_id === selectedSessionId ? intakeStatus : null;
-  const unsavedExo = Boolean(window.intakeExoDirty?.());
-  const reviewPending = !currentIntake || currentIntake.needs_review || unsavedExo;
+  const exoPending = currentIntake?.exo_pending || window.intakeExoDirty?.();
+  const reviewPending = !currentIntake || currentIntake.needs_review || exoPending;
   const processed = Boolean(record.processed);
   const hasStereo = record.quality?.stereo_pairs_paired > 0;
   const hasGlove = record.quality?.glove_valid_frames > 0;
@@ -174,7 +174,8 @@ function renderQualityJob(job, pending = false) {
   $('qcJobMessage').textContent = busy ? (ownJob?.message || '正在提交整理…')
     : failed ? ownJob.message
     : currentIntake?.needs_review ? '请先在 02 确认或跳过视触复核。'
-    : unsavedExo ? '请先在 02 保存 EXO 选择。' : job?.status === 'running' ? '正在准备录制资料，请稍候。' : '';
+    : exoPending ? 'EXO 正在扫描，可在 02 查看进度。'
+    : job?.status === 'running' ? '正在准备录制资料，请稍候。' : '';
   const process = $('process');
   const target = canContinue ? $('qcReprocessAction') : $('qcPrimaryAction');
   if (process.parentElement !== target) target.append(process);
@@ -2114,9 +2115,16 @@ function bindHandView() {
 let shownJobCompletion;
 function renderJob(job) {
   if (job.label === 'EXO 标定与对齐') window.renderExoJob?.(job);
-  if (job.label === '二维码时钟对齐' && job.session_id === $('calibSyncSession').value) {
-    if (job.status === 'complete') renderQrReport(job.result);
-    else $('qrResult').textContent = job.message;
+  if (job.label === 'EXO 自动扫描') {
+    window.renderExoJob?.(job);
+    $('jobPanel').classList.add('hidden');
+    if (job.status === 'running') return;
+    const completion = job.started + ':' + job.finished;
+    if (job.finished && shownJobCompletion !== completion) {
+      shownJobCompletion = completion;
+      if (job.session_id === selectedSessionId) refreshIntakeStatus();
+    }
+    return;
   }
   const p = $('jobPanel');
   if (job.status === 'running') { p.classList.remove('hidden'); $('jobTitle').textContent = job.label; $('jobText').textContent = job.message; lastJobStatus = job.status; }
@@ -2236,69 +2244,6 @@ async function submitEyeAssignment() {
     await loadCalibration();
   } catch (e) { toast('提交失败：' + e.message); }
 }
-async function refreshQrVideos() {
-  const picker = $('qrVideos');
-  const selected = new Set(Array.from(picker.selectedOptions, option => option.value));
-  try {
-    const id = $('calibSyncSession').value;
-    const {videos, directory} = await api('/api/calibration/qr-inputs?' + new URLSearchParams({id}));
-    if ($('calibSyncSession').value !== id) return;
-    $('qrVideoDirectory').textContent = directory;
-    picker.replaceChildren(...videos.map(name => new Option(name, name, false, selected.has(name))));
-  } catch (error) { $('qrResult').textContent = error.message; }
-}
-
-function renderQrReport(report) {
-  const link = $('qrReport');
-  link.hidden = !report?.cameras?.length && !report?.outcomes?.length;
-  if (link.hidden) {
-    $('qrResult').textContent = '所选录制还没有二维码同步报告。';
-    return;
-  }
-  link.href = capturePath('/api/calibration/qr-result?id=' + encodeURIComponent(report.session_id));
-  if (report.outcomes) {
-    $('qrResult').textContent = report.outcomes.map(camera => camera.name + ' · ' + qrOutcome(camera)).join(' ｜ ');
-    return;
-  }
-  const cameras = report.cameras.map(camera => camera.name + ' · ' + camera.observations +
-    ' 帧 · ' + (camera.mode === 'offset_only' ? '仅偏移' : '偏移与漂移') +
-    ' · 拟合残差中位数 ' + camera.median_abs_residual_ms.toFixed(1) + ' ms');
-  $('qrResult').textContent = cameras.join(' ｜ ') + ' ｜ 手套 ' + report.glove.record_count + ' 帧（接收时间）';
-}
-
-async function useQrReport(run) {
-  const id = $('calibSyncSession').value;
-  if (!id) { toast('请先选择一条已保存的录制'); return; }
-  $('qrReport').hidden = true;
-  $('qrResult').textContent = run ? '正在提交对齐任务…' : '正在读取已有报告…';
-  try {
-    if (run) {
-      const videos = Array.from($('qrVideos').selectedOptions, option => option.value);
-      await post('/api/calibration/qr-sync', {session_id:id, videos});
-    } else {
-      const report = await api('/api/calibration/qr-result?id=' + encodeURIComponent(id));
-      if ($('calibSyncSession').value === id) renderQrReport(report);
-    }
-  } catch (error) {
-    if ($('calibSyncSession').value === id) $('qrResult').textContent = error.message;
-  }
-}
-
-async function runSyncAnalysis() {
-  const id = $('calibSyncSession').value;
-  if (!id) { toast('请先选择一条录制'); return; }
-  if ($('syncResult')) $('syncResult').textContent = '正在离线估计（不占用采集设备）…';
-  try {
-    const r = await post('/api/calibration/sync-analysis', { session_id: id });
-    if ($('calibSyncSession').value !== id) return;
-    const e = r.estimate || {};
-    $('syncResult').textContent = e.status === 'estimated'
-      ? `会话 ${id}：偏移 ${e.offset_ms} ms（不确定度 ±${e.uncertainty_ms} ms，峰值比 ${e.peak_ratio}）` +
-        (e.drift_ms_per_min != null ? ` · 漂移 ${e.drift_ms_per_min} ms/min` : ' · 漂移：两半未各自出现显著峰，未给出')
-      : `会话 ${id}：INCONCLUSIVE — ${e.reason || '未给出原因'}`;
-  } catch (e) { if ($('calibSyncSession').value === id) $('syncResult').textContent = '估计失败：' + e.message; }
-}
-
 /* ---- declared marker table (idx -> position on the hand) + hand->vision registration ----
    The table is what turns "a tag was detected" into "the hand is here in the camera frame":
    T_cam0<-wrist = T_cam0<-marker @ T_marker<-wrist, with T_marker<-wrist taken from the row
@@ -2518,15 +2463,7 @@ async function loadSessions({refreshDetail = false} = {}) {
     await loadSessionDetail(selectedSessionId);
   }
 }
-function clearCalibrationResult() {
-  $('qrReport').hidden = true;
-  $('qrResult').textContent = '';
-  $('syncResult').textContent = '';
-  const missing = !$('calibSyncSession').value;
-  for (const id of ['runQrSync', 'readQrReport', 'runSyncCheck', 'useSessionFrame']) {
-    $(id).disabled = missing;
-  }
-}
+
 function syncSessionPickers() {
   const calibration = $('calibSyncSession');
   const previousCalibration = calibration.value;
@@ -2546,10 +2483,8 @@ function syncSessionPickers() {
     select.value = selectedSessionId;
     if (!select.value) select.value = '';
   }
-  if (calibration.value !== previousCalibration) {
-    clearCalibrationResult();
-    updateIntakeProceed();
-  }
+  $('useSessionFrame').disabled = !calibration.value;
+  if (calibration.value !== previousCalibration) updateIntakeProceed();
   window.refreshContactCalibration?.();
   window.refreshExoReadiness?.();
 }
@@ -2659,7 +2594,8 @@ async function openQuality(id) {
 }
 function updateIntakeProceed() {
   const current = intakeStatus?.session_id === selectedSessionId;
-  $('calibOpenSnapshot').disabled = !current || intakeStatus.needs_review || Boolean(window.intakeExoDirty?.());
+  $('calibOpenSnapshot').disabled = !current || intakeStatus.needs_review || intakeStatus.exo_pending ||
+    Boolean(window.intakeExoDirty?.());
   if (!$('quality').hidden) renderQualityJob(state?.job);
 }
 
@@ -2674,8 +2610,7 @@ async function refreshIntakeStatus() {
   $('calibContact').hidden = !record?.contact_calibration;
   if ((materials.dataset.sessionId || '') !== id) {
     materials.dataset.sessionId = id;
-    const exo = $('intakeExoDetails');
-    if (exo) exo.open = false;
+    $('exoDiagnostics').open = false;
     $('contactResultDetails').open = false;
     document.querySelector('input[name="contactPart"][value="before"]').checked = true;
     $('intakeSummary').textContent = id ? '正在读取复核状态…' : '';
@@ -2697,11 +2632,12 @@ async function refreshIntakeStatus() {
     $('intakeSummary').textContent = result.contact
       ? ['任务前 ' + (labels[result.checks.before] || '待复核'),
          '任务后 ' + (labels[result.checks.after] || '待复核')].join(' · ')
-      : '可以进入整理。';
+      : '';
     const evidence = result.exo_results.map(row => [row.role.toUpperCase(), [
-      '对时残差 ' + row.residual_ms.toFixed(1) + ' ms',
-      row.mode === 'time_only' ? '仅对时' : '桌面标定 RMS ' + row.holdout_rms_px.toFixed(2) + ' px'
-    ].join(' · ')]);
+      row.clock_mode === 'offset_only' ? '仅估计时差' : null,
+      Number.isFinite(row.residual_ms) ? '对时残差 ' + row.residual_ms.toFixed(1) + ' ms' : '已对时',
+      Number.isFinite(row.holdout_rms_px) ? '桌面标定 RMS ' + row.holdout_rms_px.toFixed(2) + ' px' : null
+    ].filter(Boolean).join(' · ')]);
     if (result.tactile_status) evidence.push(['视触校准', result.tactile_status === 'applied'
       ? '已应用到正式任务' : '沿用已有时间依据']);
     renderFacts('qcIntakeFacts', evidence);
@@ -3304,15 +3240,11 @@ $('enlargeLiveQr').onclick = () => {
 $('liveQrDialog').addEventListener('close', () => $('liveQrBody').append($('liveQrDisplay')));
 document.addEventListener('visibilitychange', updateLiveQr);
 
-async function openCalibrationLive(showQr) {
-  if (showQr && !liveQrVisible) $('toggleLiveQr').click();
+$('calibOpenLive').onclick = async () => {
   await showCaptureTab('directory');
   setLiveView(true);
-  if (showQr) { $('liveQrPanel').open = true; $('toggleLiveQr').focus(); }
-  else $('liveTitle').focus();
-}
-$('calibOpenLive').onclick = () => openCalibrationLive(false);
-$('calibShowLiveQr').onclick = () => openCalibrationLive(true);
+  $('liveTitle').focus();
+};
 
 const calibrationViews = [...document.querySelectorAll('[data-calib-view]')];
 function refreshCalibrationView() {
@@ -3338,7 +3270,7 @@ $('calibSyncSession').addEventListener('change', event => {
 $('calibOpenSnapshot').onclick = () => {
   openQuality($('calibSyncSession').value).catch(error => toast(error.message));
 };
-clearCalibrationResult();
+
 
 function setLiveView(enabled) {
   $('live').hidden = !enabled;
@@ -3428,13 +3360,7 @@ window.addEventListener('message', event => {
 $('reviewSlider').addEventListener('input', e => { stopReviewPlayback(); showReviewFrame(+e.target.value); });
 $('refreshCalib').addEventListener('click', loadCalibration);
 if ($('submitEyeCheck')) $('submitEyeCheck').addEventListener('click', submitEyeAssignment);
-if ($('runSyncCheck')) $('runSyncCheck').addEventListener('click', runSyncAnalysis);
-$('refreshQrVideos').addEventListener('click', refreshQrVideos);
-$('qrVideos').closest('details').addEventListener('toggle', event => {
-  if (event.currentTarget.open) refreshQrVideos();
-});
-$('runQrSync').addEventListener('click', () => useQrReport(true));
-$('readQrReport').addEventListener('click', () => useQrReport(false));
+
 $('startQnBotCalibration').addEventListener('click', async () => {
   /* Starting a run means re-measuring: the bridge forces the SDK to ignore any
      stored calibration record and to re-capture every stage. Disable the button

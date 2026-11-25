@@ -123,9 +123,11 @@ class Application:
         self.event_jobs = None
         self.git_commit = self._git_commit()
         self.pending_recording_qc = SimpleQueue()
+        self.intake_exo_jobs = {}
         self.devices = StationDevices(self.config)
         self.devices.on_recording_saved = self.pending_recording_qc.put
         self.queue_interrupted_alignment()
+        self.queue_interrupted_exo()
         if connect_devices:
             self.devices.launch()
 
@@ -649,11 +651,14 @@ class Application:
         contact = bool(meta.get('contact_calibration'))
         checks = review_notes(folder) if contact else {}
         selection = self.intake(folder)
-        exo_result = folder / 'derived/exo-session.json'
-        cameras = read_json(exo_result).get('cameras', []) if exo_result.is_file() else []
-        exo_results = [dict(role=camera['role'], mode=camera['validation']['status'],
+        exo_report = self.current_exo_report(folder, selection)
+        cameras = exo_report.get('cameras', []) if exo_report else []
+        exo_results = [dict(role=camera['role'],
+                            mode='passed' if camera['validation']['status'] == 'passed' else 'time_only',
+                            clock_mode=camera['clock']['mode'],
                             residual_ms=camera['clock']['median_abs_residual_ms'],
-                            holdout_rms_px=camera['validation'].get('holdout_rms_px')) for camera in cameras]
+                            holdout_rms_px=camera['validation'].get('holdout_rms_px'))
+                       for camera in cameras if camera.get('clock')]
         quality = folder / 'derived/quality.json'
         tactile_status = None
         needs_reprocess = False
@@ -664,7 +669,9 @@ class Application:
             if contact and not needs_reprocess:
                 from ego_capture.contact_calibration import timing_for_recording
                 tactile_status = timing_for_recording(folder, meta)[0]['status']
+        exo_job = self.intake_exo_jobs.get(folder.name, {})
         return dict(session_id=folder.name, contact=contact, needs_reprocess=needs_reprocess,
+                    exo_pending=exo_job.get('status') in ('queued', 'running'),
                     checks={part:checks.get(part, {}).get('status') for part in PARTS} if contact else {},
                     cameras=selection.get('cameras', []), square_mm=selection.get('square_mm', 25),
                     aligned_exo=bool(exo_results), exo_results=exo_results, tactile_status=tactile_status,
@@ -696,11 +703,159 @@ class Application:
             checked = list(checked_setup(cameras, self.exo_videos(folder.name), self.exo_intrinsics(folder.name))) if cameras else []
             selection = self.intake(folder)
             if (checked, square_mm) != (selection.get('cameras', []), selection.get('square_mm', 25)):
+                selection.pop('exo_auto', None)
+                self.intake_exo_jobs.pop(folder.name, None)
                 selection.update(cameras=checked, square_mm=square_mm, selection_saved_at_ns=time.time_ns())
             path = self.intake_path(folder)
             path.parent.mkdir(parents=True, exist_ok=True)
             dump_json(path, selection)
         return self.intake_status(folder)
+
+    @staticmethod
+    def current_exo_report(folder, selection):
+        path = folder / 'derived/exo-session.json'
+        try:
+            report = read_json(path)
+        except FileNotFoundError:
+            return None
+        if selection.get('exo_auto') and report.get('selection_version') != selection['selection_saved_at_ns']:
+            return None
+        return report
+
+    def intake_exo_state(self, folder):
+        from ego_capture import exo_station
+
+        selection = self.intake(folder)
+        with self.lock:
+            job = dict(self.intake_exo_jobs.get(folder.name, {}))
+        report = self.current_exo_report(folder, selection) if job.get('status') not in ('queued', 'running') else None
+        if report and not job:
+            job = dict(status='complete', phase='扫描完成', progress=100)
+        catalog = self.exo_videos(folder.name, selection)
+        return dict(session_id=folder.name, job=job or None, report=report,
+                    profiles=exo_station.state(self)['profiles'],
+                    videos=[dict(role=row['role'],
+                                 label=catalog[row['video']].name if row['video'] in catalog else row['video'],
+                                 profile=row.get('profile') or '') for row in selection.get('cameras', [])])
+
+    def update_intake_exo(self, folder, action, data, paths=()):
+        from ego_capture import exo_station
+
+        square_mm = exo_station.square_mm(self)
+        with self.lock:
+            if self.intake_exo_jobs.get(folder.name, {}).get('status') == 'running':
+                raise ValueError('这段录像正在扫描，完成后可调整选择。')
+            selection = self.intake(folder)
+            old_rows = selection.get('cameras', [])
+            rows = [dict(role=row['role'], video=row['video'], auto=True, profile=row.get('profile'))
+                    for row in old_rows]
+            if action == 'import':
+                selected = list(dict.fromkeys(str(Path(path).resolve()) for path in paths))
+                validation = station_paths.update({}, {'exo_video_files': selected}, self.config_base)
+                known = selection.get('exo_video_files', [])
+                selection['exo_video_files'] = list(dict.fromkeys([*known, *validation.get('exo_video_files', [])]))
+                catalog = self.exo_videos(folder.name, selection)
+                labels = {file: name for name, file in catalog.items()}
+                used_roles = {row['role'] for row in rows}
+                free_roles = iter(f'exo-{i}' for i in range(1, 9) if f'exo-{i}' not in used_roles)
+                used_videos = {catalog.get(row['video']) for row in rows}
+                for path in map(Path, selected):
+                    if path in used_videos:
+                        continue
+                    role = next(free_roles, None)
+                    if role is None:
+                        raise ValueError('每条录制最多添加 8 路 EXO。')
+                    rows.append(dict(role=role, video=labels[path], auto=True, profile=None))
+            elif action in ('profile', 'remove'):
+                row = next((item for item in rows if item['role'] == data.get('role')), None)
+                if row is None:
+                    raise ValueError('找不到所选录像。')
+                if action == 'remove':
+                    rows.remove(row)
+                else:
+                    profile = data.get('profile')
+                    if not isinstance(profile, str) or (profile and profile not in self.exo_intrinsics()):
+                        raise ValueError('请选择 00 中已添加的相机内参。')
+                    row['profile'] = profile or None
+            elif action != 'retry':
+                raise ValueError('未知的 EXO 操作。')
+
+            changed = rows != old_rows or square_mm != selection.get('square_mm', 25)
+            if changed:
+                selection.update(cameras=rows, square_mm=square_mm, exo_auto=True,
+                                 selection_saved_at_ns=time.time_ns())
+                path = self.intake_path(folder)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                dump_json(path, selection)
+            if changed or (action == 'retry' and rows):
+                self.intake_exo_jobs[folder.name] = dict(status='queued', phase='等待开始', progress=0)
+
+        self.dispatch_intake_exo()
+        return self.intake_exo_state(folder)
+
+    def queue_interrupted_exo(self):
+        for path in (self.root / 'intake').glob('*.json'):
+            try:
+                folder = self.closed_session_path(path.stem)
+                selection = read_json(path)
+                pending = selection.get('cameras') or (folder / 'derived/exo-session.json').is_file()
+                if selection.get('exo_auto') and pending and not self.current_exo_report(folder, selection):
+                    self.intake_exo_jobs[folder.name] = dict(status='queued', phase='等待恢复扫描', progress=0)
+            except (OSError, ValueError):
+                continue
+
+    def dispatch_intake_exo(self):
+        from ego_capture.exo_calibration import process_exo
+
+        with self.lock:
+            if self.devices.session or (self.job or {}).get('status') == 'running':
+                return
+            if any(job['status'] == 'running' for job in self.intake_exo_jobs.values()):
+                return
+            pending = next(((sid, job) for sid, job in self.intake_exo_jobs.items()
+                            if job['status'] == 'queued'), None)
+            if pending is None:
+                return
+            session_id, job = pending
+            job.update(status='running', phase='准备原始录像', progress=0)
+
+        def work(progress):
+            def update(percent, text):
+                with self.lock:
+                    job.update(progress=max(job['progress'], min(100, int(percent))), phase=text)
+                progress(text)
+
+            try:
+                folder = self.closed_session_path(session_id)
+                selection = self.intake(folder)
+                if selection.get('cameras'):
+                    process_exo(folder, selection['cameras'], self.exo_root, self.exo_profiles,
+                                self.config['minimum_free_bytes'], progress,
+                                measured_square_mm=selection['square_mm'],
+                                video_catalog=self.exo_videos(session_id, selection),
+                                profile_catalog=self.exo_intrinsics(session_id),
+                                progress_update=update, selection_version=selection['selection_saved_at_ns'])
+                else:
+                    self.archive_exo_report(folder)
+                with self.lock:
+                    job.update(status='complete', phase='扫描完成', progress=100)
+            except Exception as error:
+                with self.lock:
+                    job.update(status='failed', phase=str(error))
+                raise
+            return {'session_id': session_id}
+
+        try:
+            self.run_job('EXO 自动扫描', work, session_id=session_id)
+        except ValueError:
+            with self.lock:
+                job.update(status='queued', phase='等待开始', progress=0)
+
+    @staticmethod
+    def archive_exo_report(folder):
+        path = folder / 'derived/exo-session.json'
+        if path.is_file():
+            path.replace(path.with_name(f'exo-session-{time.time_ns()}.json'))
 
     def prepare_intake_preview(self, session, progress):
         from ego_capture.contact_calibration import prepare_exo_frames
@@ -725,16 +880,14 @@ class Application:
         if self.automatic_alignment(session) is None:
             progress('正在扫描录制的相机二维码')
             analyze_recording(session, progress)
-        if selection.get('cameras'):
+        if selection.get('cameras') and not selection.get('exo_auto'):
             progress('正在对齐选定的 EXO 原片')
             process_exo(session, selection['cameras'], self.exo_root, self.exo_profiles,
                         self.config['minimum_free_bytes'], progress,
                         measured_square_mm=selection['square_mm'],
                         video_catalog=self.exo_videos(session.name), profile_catalog=self.exo_intrinsics(session.name))
-        elif selection.get('selection_saved_at_ns'):
-            report = session / 'derived/exo-session.json'
-            if report.is_file():
-                report.replace(report.with_name(f'exo-session-{time.time_ns()}.json'))
+        elif not selection.get('cameras') and selection.get('selection_saved_at_ns'):
+            self.archive_exo_report(session)
         dump_json(session / 'derived/quality.json', qc)
         return qc
 
@@ -763,6 +916,7 @@ class Application:
 
     def dispatch_recording_qc(self):
         """Prepare a closed recording, then align its saved camera sources."""
+        self.dispatch_intake_exo()
         if self.devices.session or (self.job or {}).get('status') == 'running':
             return
         try:
@@ -917,12 +1071,13 @@ class Application:
             self._add_configured_files(catalog, files, {'.json'}, '本次导入')
         return catalog
 
-    def exo_videos(self, session_id=''):
+    def exo_videos(self, session_id='', selection=None):
         from ego_capture.qr_sync import EXO_SUFFIXES, exo_catalog
         videos = self._add_configured_files(exo_catalog(self.exo_root), self.exo_video_files, EXO_SUFFIXES)
         if session_id:
             folder = self.closed_session_path(session_id)
-            files = tuple(Path(path) for path in self.intake(folder).get('exo_video_files', []))
+            intake = self.intake(folder) if selection is None else selection
+            files = tuple(Path(path) for path in intake.get('exo_video_files', []))
             self._add_configured_files(videos, files, EXO_SUFFIXES, '本次导入')
             row = read_json(folder / 'metadata.json').get('exo_live', {})
             live = exo_catalog(folder / 'exo-live')
@@ -1076,6 +1231,9 @@ class CaptureRoutes:
                                        'profile_directory': str(app.exo_profiles),
                                        'videos': sorted(app.exo_videos(query.get('id', [''])[0])),
                                        'profiles': sorted(app.exo_intrinsics(query.get('id', [''])[0]))})
+            if path == '/api/exo/station':
+                from ego_capture import exo_station
+                return self.send(200, exo_station.state(app))
             if path == '/api/exo/intrinsics-example':
                 example = ROOT / 'configs/ego-exo-intrinsics.example.json'
                 return self.send(200, example.read_bytes(), 'application/json; charset=utf-8')
@@ -1084,8 +1242,7 @@ class CaptureRoutes:
                 return self.send(200, board_png(), 'image/png')
             if path == '/api/exo/result':
                 folder = app.closed_session_path(query.get('id', [''])[0])
-                report = folder / 'derived/exo-session.json'
-                return self.send(200, read_json(report) if report.is_file() else {'status': 'missing'})
+                return self.send(200, app.current_exo_report(folder, app.intake(folder)) or {'status': 'missing'})
             if path == '/api/calibration/qr-result':
                 from ego_capture.qr_sync import REPORT
                 folder = app.closed_session_path(query.get('id', [''])[0])
@@ -1249,6 +1406,9 @@ class CaptureRoutes:
             if path == '/api/intake':
                 folder = app.closed_session_path(query.get('id', [''])[0])
                 return self.send(200, app.intake_status(folder))
+            if path == '/api/intake-exo':
+                folder = app.closed_session_path(query.get('id', [''])[0])
+                return self.send(200, app.intake_exo_state(folder))
             if path == '/api/recorded-setups':
                 return self.send(200, app.setup_catalog())
             if path == '/api/recorded-tactile':
@@ -1412,6 +1572,12 @@ class CaptureRoutes:
                 result = app.save_paths(data)
             elif path == '/api/settings/choose-path':
                 result = {'paths': station_paths.choose(data.get('field'), app.config_base, data.get('current', ''))}
+            elif path == '/api/exo/station':
+                from ego_capture import exo_station
+                result = exo_station.save(app, data)
+            elif path == '/api/exo/station/profiles':
+                from ego_capture import exo_station
+                result = exo_station.import_profiles(app)
             elif path == '/api/calibration/recorded-device':
                 result = app.recorded_device_report(data)
             elif path == '/api/live/source':
@@ -1484,6 +1650,16 @@ class CaptureRoutes:
             elif path == '/api/intake':
                 folder = app.closed_session_path(data.get('session_id', ''))
                 result = app.save_intake_choices(folder, data.get('cameras'), data.get('square_mm', 25))
+            elif path in ('/api/intake-exo/import', '/api/intake-exo/profile',
+                          '/api/intake-exo/remove', '/api/intake-exo/retry'):
+                folder = app.closed_session_path(data.get('session_id', ''))
+                action = path.rsplit('/', 1)[-1]
+                if action == 'import':
+                    chosen = station_paths.choose('exo_video_files', app.config_base, str(app.exo_root))
+                    result = (app.update_intake_exo(folder, action, data, chosen)
+                              if chosen else app.intake_exo_state(folder))
+                else:
+                    result = app.update_intake_exo(folder, action, data)
             elif path == '/api/intake/preview':
                 folder = app.closed_session_path(data.get('session_id', ''))
                 result = app.run_job('准备视触复核', lambda progress: app.prepare_intake_preview(folder, progress),
@@ -1583,6 +1759,8 @@ class CaptureRoutes:
                 status = app.intake_status(p)
                 if status['needs_review']:
                     raise ValueError('请在 02 导入与复核确认或跳过任务前后对帧')
+                if status['exo_pending']:
+                    raise ValueError('EXO 正在扫描，完成后可整理会话。')
                 selection = app.intake(p)
                 if (read_json(p / 'metadata.json').get('capture_intake_required')
                         or selection.get('cameras') or selection.get('selection_saved_at_ns')):

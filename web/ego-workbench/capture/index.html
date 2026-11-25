@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ego · 双目与手套采集</title><link rel="stylesheet" href="./style.css?v=capture-flow-2"></head>
+<title>Ego · 双目与手套采集</title><link rel="stylesheet" href="./style.css?v=exo-auto-1"></head>
 <body>
 <nav id="standaloneLinks" class="capture-tools release-links" aria-label="工作台" hidden>
   <a href="/ego-capture/" aria-current="page">采集与处理</a>
@@ -348,8 +348,7 @@
 </section>
 <section id="calib" class="page" role="tabpanel" aria-labelledby="tabCalib" hidden>
 <div class="section-heading calib-heading"><h2>设备与标定</h2>
-<div class="toolbar"><a class="small tool-link" href="./api/exo/board.png" download="ego-charuco-8x5-25mm.png">下载桌面标定板</a>
-<button id="calibOpenLive" type="button" class="primary small">去 01 录制</button></div></div>
+<div class="toolbar"><button id="calibOpenLive" type="button" class="primary small">去 01 录制</button></div></div>
 <nav class="calib-nav" aria-label="标定工具">
 <button type="button" data-calib-view="calibDevices" aria-controls="calibDevices" aria-pressed="true">当前设备标定</button>
 
@@ -373,6 +372,29 @@
 <div class="toolbar"><button id="startQnBotCalibration" class="primary">重新标定 OpenXR</button><button id="reuseQnBotCalibration" class="small">使用上次标定</button><button id="captureQnBotCalibration" class="small" disabled>采集当前姿势</button><button id="cancelQnBotCalibration" class="small" disabled>取消</button></div>
 </article>
 </div>
+<details id="exoStationCalibration" class="card calib-diagnostics">
+<summary>EXO 桌面标定与内参 <span id="exoStationSummary" class="muted">25 mm</span></summary>
+<div class="exo-station-layout">
+  <section class="exo-station-board" aria-labelledby="exoStationBoardTitle">
+    <h3 id="exoStationBoardTitle">桌面标定板</h3>
+    <img src="./api/exo/board.png" loading="lazy" width="440" height="290" alt="8 列 5 行 ChArUco 桌面标定板">
+    <a class="small tool-link" href="./api/exo/board.png" download="ego-charuco-8x5-25mm.png">下载标定板</a>
+    <p class="muted">按 100% 打印。拍摄时将同一块板固定在桌面。</p>
+    <form id="exoStationBoardForm">
+      <label>实测格长（mm）<input id="exoStationSquare" type="number" value="25" min="15" max="40" step="0.01" required></label>
+      <button type="submit" id="exoStationSaveSquare" class="small" disabled>保存格长</button>
+    </form>
+  </section>
+  <section class="exo-station-profiles" aria-labelledby="exoStationProfilesTitle">
+    <h3 id="exoStationProfilesTitle">相机内参</h3>
+    <div class="toolbar"><button type="button" id="exoStationAddProfiles" class="small" disabled>添加内参 JSON</button>
+    <a class="small tool-link" href="./api/exo/intrinsics-example" download="ego-exo-intrinsics.example.json">模板</a></div>
+    <p id="exoStationProfilesEmpty" class="muted">添加后可在 02 为录像选用。</p>
+    <ul id="exoStationProfiles" class="exo-station-profile-list" hidden></ul>
+  </section>
+</div>
+<p id="exoStationStatus" class="muted" role="status" hidden></p>
+</details>
 <details class="card calib-diagnostics"><summary>设备参数与校验状态</summary>
 <div class="toolbar calibration-evidence-tools">
   <label>查看来源 <select id="deviceEvidenceSource"><option value="">当前连接设备</option></select></label>
@@ -417,80 +439,37 @@
 <label>录制会话 <select id="calibSyncSession"></select></label></div>
 <p id="intakeEmpty" class="muted" role="status">请选择一条已保存的录制。</p>
 <div id="intakeMaterials" hidden>
-<div id="calibClocks" class="calib-pane">
-<details id="intakeExoDetails" class="card exo-optional">
-<summary><span>EXO 原片（可选）</span><span id="exoSummary" class="muted" aria-live="polite"></span></summary>
-<div id="exoSetup" class="exo-intake">
-<div class="toolbar exo-import-actions">
-  <button id="chooseIntakeVideo" type="button" class="primary">添加 EXO 原片</button>
+<section id="intakeExoDetails" class="card exo-intake" aria-labelledby="intakeExoTitle">
+<div id="exoSetup">
+<div class="exo-intake-heading">
+  <div><h3 id="intakeExoTitle">EXO 录像 <small>可选</small></h3><p id="exoSummary" class="muted" hidden></p></div>
+  <button id="chooseIntakeVideo" type="button" class="primary">导入 EXO 录像</button>
 </div>
-<ul id="exoSelectedVideos" class="exo-selected-list" aria-label="已选 EXO 原片" hidden></ul>
-<p id="exoReady" class="muted" role="status"></p>
-<p id="exoStatus" role="status" class="muted"></p>
-<div id="exoSelectionActions" class="toolbar exo-selection-toolbar" hidden>
-  <button id="processExo" type="button" class="small primary" disabled>保存 EXO 选择</button>
+<ul id="exoSelectedVideos" class="exo-selected-list" aria-label="已导入的 EXO 录像" hidden></ul>
+<div id="exoProgressBlock" class="exo-progress" hidden>
+  <p id="exoProgressText" role="status" aria-live="polite"></p>
+  <progress id="exoProgress" max="100" aria-label="EXO 整理进度"></progress>
 </div>
-<details id="exoCameraSettings" class="compact-details">
-<summary>相机与桌面标定设置</summary>
-<div class="toolbar exo-import-actions">
-  <button id="addExo" type="button" class="small">添加相机位</button>
-  <button id="chooseIntakeCalibrationVideo" type="button" class="small">导入标定录像</button>
-  <button id="chooseIntakeProfile" type="button" class="small">添加内参 JSON</button>
-  <button id="refreshExo" type="button" class="small quiet">刷新素材列表</button>
+<div id="exoActions" class="exo-result-actions" hidden>
+  <p id="exoStatus" class="muted" role="status"></p>
+  <button id="retryIntakeExo" class="small" type="button" hidden>重新整理 EXO</button>
 </div>
-<details class="compact-details">
-<summary>已配置的素材目录</summary>
-<dl class="exo-directories">
-  <dt>原始录像和标定录像</dt><dd class="directory-path"><code id="exoVideoDirectory">正在读取…</code><button type="button" class="small quiet" data-copy-text="exoVideoDirectory" disabled>复制路径</button></dd>
-  <dt>内参 JSON</dt><dd class="directory-path"><code id="exoProfileDirectory">正在读取…</code><button type="button" class="small quiet" data-copy-text="exoProfileDirectory" disabled>复制路径</button></dd>
-</dl>
+<details id="exoProfiles" class="compact-details" hidden>
+  <summary>选择已保存的相机内参</summary>
+  <div id="exoProfileOptions"></div>
 </details>
-<div id="exoRows" class="calib-actions-grid"></div>
-<details id="exoTableTools" class="compact-details">
-<summary>桌面标定资料</summary>
-<p>选择固定板录像和内参档案。没有内参档案时，加载多角度拍摄标定板的录像。</p>
-<div class="toolbar">
-  <a class="tool-link" href="./api/exo/intrinsics-example" download="ego-exo-intrinsics.example.json">下载内参 JSON 示例</a>
-  <label>实测格长（mm）<input id="exoSquareMm" type="number" value="25" min="15" max="40" step="0.01" required></label>
-</div>
-</details>
-</details>
-<details class="compact-details clock-only">
-<summary>对时报告与诊断</summary>
-<div class="toolbar">
-<button id="readExoReport" type="button" class="small">查看 EXO 结果</button>
-<a id="exoReport" class="tool-link" download="exo-session.json" hidden>下载 EXO 记录</a>
-</div>
-<p id="exoReportStatus" class="muted" role="status"></p>
-<ul id="exoCameraResults" class="exo-results" hidden></ul>
-<details class="compact-details">
-<summary>手动对时工具</summary>
-<div class="toolbar">
-<button id="calibShowLiveQr" type="button" class="small">去实时录制显示二维码</button>
-<a class="tool-link" href="./qr-timecode.html" target="_blank" rel="noopener">打开独立二维码</a>
-</div>
-<label for="qrVideos">EXO 原始视频</label>
-<div class="calib-video-source">
-<select id="qrVideos" size="3" multiple aria-describedby="qrVideoFolder"></select>
-<button type="button" class="small quiet" id="refreshQrVideos">刷新视频</button>
-</div>
-<details class="calib-input-guide" id="qrVideoFolder"><summary>导入 MP4／MOV</summary><p>将文件放入 <code id="qrVideoDirectory"></code>，再刷新视频列表。</p></details>
-<div class="toolbar">
-<button type="button" class="small" id="runQrSync">计算时间映射</button>
-<button type="button" class="small" id="readQrReport">查看已有结果</button>
-<a id="qrReport" download="qr-sync.json" class="tool-link" hidden>下载 JSON</a>
-</div>
-<p id="qrResult" class="muted" role="status"></p>
-<div class="calib-latency">
-<button id="runSyncCheck" type="button" class="small quiet">检查视触延迟</button>
-<details class="calib-input-guide"><summary>怎么拍敲击测试</summary><p>仅首次验收、换设备或同步异常时，用戴手套的手在镜头前敲击，录制开头、中段和结尾各做一次。</p></details>
-<p id="syncResult" class="muted" role="status"></p>
-</div>
-</details>
+<details id="exoDiagnostics" class="compact-details exo-diagnostics" hidden>
+  <summary>对时报告与诊断</summary>
+  <p id="exoReportStatus" class="muted" role="status"></p>
+  <div id="exoCameraResults"></div>
+  <div class="exo-result-actions">
+    <button id="rescanIntakeExo" class="small" type="button" hidden>重新扫描</button>
+    <button id="exoOpenCalibration" class="small quiet" type="button" hidden>去 00 设置内参</button>
+    <a id="exoReport" class="tool-link" download="exo-session.json" hidden>下载报告</a>
+  </div>
 </details>
 </div>
-</details>
-</div>
+</section>
 <section id="calibContact" class="calib-pane" aria-labelledby="contactReviewTitle" hidden>
 <div id="contactCalibrationReview" class="card contact-calibration-review">
 <header class="contact-review-header">
@@ -613,4 +592,4 @@
 <script src="./review_event_view.js?v=contact-task-alignment"></script>
 <script src="./recorded-hand-view.js?v=capture-review-20261116-4"></script>
 <script src="./qr-renderer.js"></script><script src="./qr-timecode.js?v=4"></script>
-<script src="./app.js?v=capture-flow-2"></script><script src="./guided-capture.js?v=capture-review-20261116-4"></script><script src="./exo-setup.js?v=capture-flow-2"></script><script src="./contact-calibration.js?v=capture-flow-2"></script><script src="./station-paths.js?v=1"></script></body></html>
+<script src="./app.js?v=exo-auto-1"></script><script src="./guided-capture.js?v=capture-review-20261116-4"></script><script src="./exo-setup.js?v=exo-auto-1"></script><script src="./contact-calibration.js?v=capture-flow-2"></script><script src="./station-paths.js?v=exo-station"></script></body></html>

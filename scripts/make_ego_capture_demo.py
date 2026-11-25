@@ -10,7 +10,7 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tests'))
-from test_capture_delivery import fixture, recording, save
+from test_capture_delivery import board_view, exo, fixture, recording, save, video
 
 
 def main():
@@ -22,15 +22,28 @@ def main():
     station = destination/'recordings'
 
     with tempfile.TemporaryDirectory(dir=destination) as staging:
-        videos, profiles, clocks, _, _ = fixture(Path(staging))
+        _, profiles, clocks, _, _ = fixture(Path(staging))
         source_videos = station/'exo-inbox'
         source_profiles = station/'exo-calibrations'
         source_videos.mkdir(parents=True)
         source_profiles.mkdir()
+        intrinsics = json.loads((profiles/'lens.json').read_text(encoding='utf-8'))
+        board = exo._board().generateImage((800, 500))
+        table = board_view(board, np.asarray(intrinsics['K']),
+                           np.array([.12, -.09, .08]), np.array([-.23, -.12, .64]))
+        exo_frames = []
+        for index, clock in enumerate(clocks):
+            pixels = table.copy()
+            if index / 4 < 3.5 or index / 4 >= 15:
+                pixels[110:370, 357:617] = clock[110:370, 190:450]
+            else:
+                pixels[:, 350:] = clock[:, 350:]
+            exo_frames.append(pixels)
+        primary = source_videos/'exo1-task.mp4'
+        video(primary, exo_frames)
         for eye in (1, 2, 3):
-            shutil.copyfile(videos/f'exo{eye}.mp4', source_videos/f'exo{eye}-task.mp4')
-            shutil.copyfile(videos/'table.mp4', source_videos/f'exo{eye}-table.mp4')
-            shutil.copyfile(videos/'varied.mp4', source_videos/f'exo{eye}-intrinsics.mp4')
+            if eye != 1:
+                shutil.copyfile(primary, source_videos/f'exo{eye}-task.mp4')
             shutil.copyfile(profiles/'lens.json', source_profiles/f'exo{eye}-lens.json')
 
         session = station/'sessions'/'demo-cup-001'
