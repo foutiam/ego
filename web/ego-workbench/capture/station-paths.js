@@ -221,15 +221,18 @@
   const panel = $('exoStationCalibration');
   const square = $('exoStationSquare');
   const add = $('exoStationAddProfiles');
+  const calibrate = $('exoStationCalibrateVideo');
   const save = $('exoStationSaveSquare');
   const listing = $('exoStationProfiles');
   const feedback = $('exoStationStatus');
   let savedSquare = null;
   let busy = false;
+  let calibrating = false;
+  let completedCalibration = null;
 
   function updateControls() {
-    square.disabled = busy || savedSquare === null;
-    add.disabled = busy || savedSquare === null;
+    square.disabled = busy || calibrating || savedSquare === null;
+    add.disabled = calibrate.disabled = square.disabled;
     save.disabled = square.disabled || !square.validity.valid || square.valueAsNumber === savedSquare;
   }
 
@@ -254,7 +257,15 @@
       const metadata = document.createElement('span');
       metadata.className = 'muted';
       metadata.textContent = profile.image_size.join(' × ') + ' · ' + (profile.model === 'fisheye' ? '鱼眼' : '针孔');
-      row.append(name, metadata);
+      if (Number.isFinite(profile.holdout_rms_px))
+        metadata.textContent += ' · 留出 RMS ' + profile.holdout_rms_px.toFixed(2) + ' px';
+      const download = document.createElement('a');
+      download.className = 'tool-link';
+      download.href = capturePath('/api/exo/station/profile?' + new URLSearchParams({id: profile.id}));
+      download.download = profile.id;
+      download.textContent = '下载 JSON';
+      download.setAttribute('aria-label', '下载 ' + profile.label + ' 内参');
+      row.append(name, metadata, download);
       return row;
     }));
   }
@@ -278,7 +289,7 @@
   }
 
   panel.addEventListener('toggle', () => {
-    if (panel.open) update(() => api('/api/exo/station'), '正在读取 EXO 标定…');
+    if (panel.open && !calibrating) update(() => api('/api/exo/station'), '正在读取 EXO 标定…');
   });
   square.addEventListener('input', updateControls);
   $('exoStationBoardForm').addEventListener('submit', event => {
@@ -287,6 +298,38 @@
     update(() => post('/api/exo/station', {square_mm:square.valueAsNumber}),
       '正在保存格长…', () => '已保存格长');
   });
+  window.renderExoStationJob = job => {
+    if (completedCalibration === job.started) return;
+    calibrating = job.status === 'running';
+    if (calibrating) showStatus(job.message);
+    else {
+      completedCalibration = job.started;
+      if (job.status === 'complete') {
+        const result = job.result;
+        render(result);
+        showStatus((result.added.length ? '已保存内参' : '内参已在档案库中') + ' · ' +
+          result.calibration_views + ' 帧参与标定与验收 · 留出 RMS ' + result.holdout_rms_px.toFixed(2) + ' px');
+        window.refreshIntakeExo?.();
+      } else showStatus(job.message);
+    }
+    updateControls();
+  };
+  calibrate.onclick = async () => {
+    if (calibrate.disabled) return;
+    busy = true;
+    updateControls();
+    showStatus('请在本机窗口选择一段标定录像。');
+    try {
+      const result = await post('/api/exo/station/calibrate', {});
+      if (result.job) window.renderExoStationJob(result.job);
+      else showStatus();
+    } catch (error) {
+      showStatus(error.message);
+    } finally {
+      busy = false;
+      updateControls();
+    }
+  };
   add.onclick = () => update(() => post('/api/exo/station/profiles', {}),
     '请在本机窗口选择内参 JSON。', result => result.added.length
       ? '已添加 ' + result.added.length + ' 份内参'

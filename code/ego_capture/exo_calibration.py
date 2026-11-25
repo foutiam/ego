@@ -131,10 +131,14 @@ def _video_frames(path, step_seconds=None):
             yield pts, frame
 
 
-def _views(path, board):
+def _views(path, board, *, spread=False, progress=None):
     detector = cv2.aruco.CharucoDetector(board)
     size, output = None, []
+    next_progress = -np.inf
     for pts, frame in _video_frames(path, .25):
+        if progress is not None and pts >= next_progress:
+            progress(f'正在扫描标定板，已识别 {len(output)} 帧')
+            next_progress = pts + 2
         dimensions = (frame.width, frame.height)
         if size is not None and dimensions != size:
             raise ValueError('标定视频中分辨率发生变化')
@@ -144,8 +148,10 @@ def _views(path, board):
             continue
         obj, img = board.matchImagePoints(corners, ids)
         output.append((pts, obj.reshape(-1, 3), img.reshape(-1, 2)))
-        if len(output) == MAX_VIEWS:
+        if len(output) == MAX_VIEWS and not spread:
             break
+    if len(output) > MAX_VIEWS:
+        output = [output[index] for index in np.linspace(0, len(output) - 1, MAX_VIEWS, dtype=int)]
     if len(output) < 6:
         raise ValueError('可识别的标定板画面不足。请让整块板清晰入镜并补拍')
     return size, output
@@ -192,6 +198,21 @@ def _estimate_intrinsics(size, views):
     if not np.isfinite(rms) or rms > MAX_RMS_PX:
         raise ValueError(f'内参留出画面重投影误差 {rms:.2f} px，请检查板尺寸、清晰度或导入镜头档案')
     return camera, distortion.ravel(), 'pinhole', rms
+
+
+def calibrate_intrinsics(video, *, square_mm=25., progress=None):
+    """Fit reusable lens parameters from a multi-view board recording."""
+    if progress is not None:
+        progress('正在扫描标定板')
+    size, views = _views(video, _board(square_mm), spread=True, progress=progress)
+    if progress is not None:
+        progress('正在拟合内参并检查留出的画面')
+    camera, distortion, model, rms = _estimate_intrinsics(size, views)
+    result = dict(intrinsics=dict(model=model, image_size=list(size), K=camera.tolist(),
+                                  D=distortion.tolist(), source='video_fit', holdout_rms_px=rms),
+                  calibration_views=len(views), holdout_views=len(views) // 4)
+    load_intrinsics(result, size)
+    return result
 
 
 def calibrate(table_video, *, imported=None, intrinsic_video=None, square_mm=25.):

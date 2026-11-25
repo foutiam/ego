@@ -389,8 +389,15 @@
   </section>
   <section class="exo-station-profiles" aria-labelledby="exoStationProfilesTitle">
     <h3 id="exoStationProfilesTitle">相机内参</h3>
-    <div class="toolbar"><button type="button" id="exoStationAddProfiles" class="small" disabled>添加内参 JSON</button>
-    <a class="small tool-link" href="./api/exo/intrinsics-example" download="ego-exo-intrinsics.example.json">模板</a></div>
+    <div class="toolbar">
+      <button type="button" id="exoStationCalibrateVideo" class="primary small" disabled>从录像求内参</button>
+      <button type="button" id="exoStationAddProfiles" class="small" disabled>添加内参 JSON</button>
+      <a class="small tool-link" href="./api/exo/intrinsics-example" download="ego-exo-intrinsics.example.json">模板</a>
+    </div>
+    <details class="compact-details">
+      <summary>怎么拍标定录像</summary>
+      <p>手机使用与正式录像相同的镜头、方向和分辨率。固定手机，把标定板移到中央和四周，改变距离并向不同方向倾斜。每个姿势停一下，确保图案清晰。</p>
+    </details>
     <p id="exoStationProfilesEmpty" class="muted">添加后可在 02 为录像选用。</p>
     <ul id="exoStationProfiles" class="exo-station-profile-list" hidden></ul>
   </section>
@@ -594,4 +601,4 @@
 <script src="./review_event_view.js?v=contact-task-alignment"></script>
 <script src="./recorded-hand-view.js?v=capture-review-20261116-4"></script>
 <script src="./qr-renderer.js"></script><script src="./qr-timecode.js?v=4"></script>
-<script src="./app.js?v=capture-multiview-sync-2"></script><script src="./guided-capture.js?v=capture-review-20261116-4"></script><script src="./exo-setup.js?v=exo-auto-1"></script><script src="./contact-calibration.js?v=capture-flow-2"></script><script src="./station-paths.js?v=exo-station"></script></body></html>
+<script src="./app.js?v=capture-phone-intrinsics-1"></script><script src="./guided-capture.js?v=capture-review-20261116-4"></script><script src="./exo-setup.js?v=exo-auto-1"></script><script src="./contact-calibration.js?v=capture-flow-2"></script><script src="./station-paths.js?v=exo-station-video"></script></body></html>

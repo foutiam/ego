@@ -1289,6 +1289,12 @@ class CaptureRoutes:
             if path == '/api/exo/station':
                 from ego_capture import exo_station
                 return self.send(200, exo_station.state(app))
+            if path == '/api/exo/station/profile':
+                from ego_capture.exo_calibration import read_profile
+                profile = app.exo_intrinsics().get(query.get('id', [''])[0])
+                if profile is None:
+                    return self.send(404, {'message': '找不到内参档案'})
+                return self.send(200, read_profile(profile))
             if path == '/api/exo/intrinsics-example':
                 example = ROOT / 'configs/ego-exo-intrinsics.example.json'
                 return self.send(200, example.read_bytes(), 'application/json; charset=utf-8')
@@ -1650,6 +1656,9 @@ class CaptureRoutes:
             elif path == '/api/exo/station':
                 from ego_capture import exo_station
                 result = exo_station.save(app, data)
+            elif path == '/api/exo/station/calibrate':
+                from ego_capture import exo_station
+                result = exo_station.calibrate_video(app)
             elif path == '/api/exo/station/profiles':
                 from ego_capture import exo_station
                 result = exo_station.import_profiles(app)

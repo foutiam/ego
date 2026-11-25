@@ -2115,6 +2115,7 @@ function bindHandView() {
 /* ---- job panel ---- */
 let shownJobCompletion;
 function renderJob(job) {
+  if (job.label === 'EXO 录像内参标定') window.renderExoStationJob?.(job);
   if (job.label === 'EXO 标定与对齐') window.renderExoJob?.(job);
   if (job.label === 'EXO 自动扫描') {
     window.renderExoJob?.(job);
