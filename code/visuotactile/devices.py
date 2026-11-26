@@ -20,7 +20,7 @@ import av
 import numpy as np
 import serial
 from serial.tools import list_ports
-from .protocol import (VisioDecoder, GloveDecoder, decode_frame, protobuf, first,
+from .protocol import (VisioDecoder, GloveDecoder, decode_frame, decode_pressure, glove_side, protobuf, first,
                        string, camera_calibration, frame_transform, command,
                        PRESSURE_OFFSET, PRESSURE_SIZE)
 from .pose import HandPose, jpeg_preview
@@ -113,6 +113,7 @@ class Devices:
         self.lock=threading.RLock();self.stop=threading.Event();self.threads=[];self.session=None
         self.state={'camera':{'connected':False,'message':'等待连接双目相机'},
                     'glove':{'connected':False,'message':'等待连接左手手套'},
+                    'glove_right':{'connected':False,'message':'选择右手串口后连接'},
                     'pose':{'detected':False,'message':'等待左手进入画面'},'notice':'','mode':'live'}
         self.latest=[None,None];self.previews=[None,None];self.video_queues=[queue.Queue(90),queue.Queue(90)]
         self.calibration={};self.identity={};self.channels={};self.ports={};self.baseline=None;self.baseline_until=0;self.baseline_samples=[]
@@ -127,7 +128,7 @@ class Devices:
         # recorded and then dropped here, so the stereo baseline the device states
         # never reached the calibration page.
         self.transforms={}
-        self.serial_generation={'camera':0,'glove':0}
+        self.serial_generation={'camera':0,'glove':0,'glove_right':0}
         self.operator_serial=set()
         self.contact=False;self.contact_count=0;self.touch_history=collections.deque(maxlen=600)
         # Monotonic per-sample sequence numbers aligned with touch_history, so
@@ -159,7 +160,7 @@ class Devices:
 
     def launch(self):
         self._start_retarget_bridge()
-        for target,args in [(self._reader,('camera',)),(self._reader,('glove',)),(self._video,(0,)),(self._video,(1,)),(self._pose,())]:
+        for target,args in [(self._reader,('camera',)),(self._reader,('glove',)),(self._reader,('glove_right',)),(self._video,(0,)),(self._video,(1,)),(self._pose,())]:
             t=threading.Thread(target=target,args=args,daemon=True);t.start();self.threads.append(t)
 
     def _start_retarget_bridge(self):
@@ -249,7 +250,7 @@ class Devices:
             glove = self.state['glove']
             glove['skeleton_recorded'] = int(glove.get('skeleton_recorded', 0)) + 1
             glove['skeleton_record_error'] = None
-            if self.session:
+            if self.session and 'glove' in self.session.glove_streams:
                 self.session.skeleton(record)
 
     def _push_retarget(self, emf, timestamp):
@@ -312,14 +313,25 @@ class Devices:
                 return
             if port and port not in {item['port'] for item in self.available_ports()}:
                 raise ValueError('串口不在设备列表，请重新扫描')
-            other = 'glove' if kind == 'camera' else 'camera'
-            if port and port in (self.config.get(other+'_port_override'), self.state[other].get('port')):
-                raise ValueError('该串口已分配给另一设备')
+            for other in self.serial_generation:
+                if other == kind or not port:
+                    continue
+                if port == self.config.get(other+'_port_override'):
+                    raise ValueError('该串口已分配给另一设备')
+                if port == self.state[other].get('port'):
+                    if other == 'glove' and kind == 'glove_right':
+                        self._reset_serial_glove('glove', '该串口已指定为右手，正在重新识别左手')
+                    else:
+                        raise ValueError('该串口已分配给另一设备')
             self.config[key] = port or None
             if port:
                 self.operator_serial.add(kind)
             else:
                 self.operator_serial.discard(kind)
+            if kind != 'camera':
+                message = '选择右手串口后连接' if kind == 'glove_right' and not port else '正在切换串口'
+                self._reset_serial_glove(kind, message)
+                return
             self.serial_generation[kind] += 1
             self.state[kind] = dict(connected=False, message='正在切换串口', frames=0)
             if kind == 'camera':
@@ -335,24 +347,29 @@ class Devices:
                 with self.preview_times_lock:
                     for stamps in self.preview_times:
                         stamps.clear()
-            else:
-                self.baseline = self.pressure_baseline = self.pressure_baseline_source = None
-                self.baseline_until = 0
-                self.baseline_samples.clear()
-                self.pressure_baseline_samples.clear()
-                self.touch_history.clear()
-                self.touch_seq.clear()
-                self.contact, self.contact_count = False, 0
-                self.last_glove_ui = 0.
+
+    def _reset_serial_glove(self, kind, message):
+        self.serial_generation[kind] += 1
+        self.state[kind] = dict(connected=False, message=message, frames=0)
+        if kind == 'glove':
+            self.baseline = self.pressure_baseline = self.pressure_baseline_source = None
+            self.baseline_until = 0
+            self.baseline_samples.clear()
+            self.pressure_baseline_samples.clear()
+            self.touch_history.clear()
+            self.touch_seq.clear()
+            self.contact, self.contact_count = False, 0
+            self.last_glove_ui = 0.
 
     def _find_port(self, kind):
         override=self.config.get(kind+'_port_override')
         ports=list(list_ports.comports())
         if override:
             return next((p for p in ports if p.device==override),None)
-        other='glove' if kind=='camera' else 'camera'
-        reserved=self.config.get(other+'_port_override')
-        found=[p for p in ports if p.device!=reserved and
+        if kind == 'glove_right':
+            return None
+        reserved={self.config.get(other+'_port_override') for other in self.serial_generation if other != kind}
+        found=[p for p in ports if p.device not in reserved and
                p.vid==self.config[kind+'_vid'] and p.pid==self.config[kind+'_pid']]
         if len(found)>1:raise ValueError('发现多个匹配设备，请在实时录制中手动选择串口')
         return found[0] if found else None
@@ -364,6 +381,9 @@ class Devices:
             link=None
             with self.lock:generation=self.serial_generation[kind]
             try:
+                if kind == 'glove_right' and not self.config.get('glove_right_port_override'):
+                    self.stop.wait(.3)
+                    continue
                 port=self._find_port(kind)
                 if not port:
                     with self.lock:
@@ -395,7 +415,8 @@ class Devices:
                     host=time.time_ns();mono=time.monotonic_ns();first_received=first_received or mono;total+=len(data)
                     with self.lock:
                         if generation!=self.serial_generation[kind]:break
-                        if self.session:self.session.raw(kind,data,host,mono)
+                        if self.session and (kind == 'camera' or kind in self.session.glove_streams):
+                            self.session.raw(kind,data,host,mono)
                         self.state[kind].update(last_data_mono_ns=mono,bytes=total,message='正在接收')
                     self.consume(kind,parser,data,host,mono,generation=generation)
                     if kind=='camera' and parser.identity.get('name'):
@@ -418,7 +439,8 @@ class Devices:
                     changed = generation!=self.serial_generation[kind]
                     if not changed:
                         self.state[kind].update(connected=False,message=f'连接中断：{exc}')
-                        if self.session:self.stop_recording(f'{kind}连接中断')
+                        if self.session and (kind == 'camera' or kind in self.session.glove_streams):
+                            self.stop_recording(f'{kind}连接中断')
                 if not changed:self.stop.wait(2)
             finally:
                 if self.ports.get(kind) is link:self.ports.pop(kind,None)
@@ -429,8 +451,19 @@ class Devices:
     def consume(self, kind, parser, data, host, mono, generation=None):
         if generation is None:  # Also used by legacy replay and probe paths.
             generation=self.serial_generation[kind]
-        if kind=='glove':
-            for frame,offset in parser.feed(data):self._glove_frame(frame,host,mono,generation=generation)
+        if kind in ('glove', 'glove_right'):
+            side = 'left' if kind == 'glove' else 'right'
+            frames = [frame for frame, _ in parser.feed(data)]
+            detected = {glove_side(frame) for frame in frames}
+            if detected and detected != {side}:
+                raise ValueError('手套上报的左右手与串口选择不符，请核对实时录制中的串口')
+            if side == 'left':
+                for frame in frames:
+                    self._glove_frame(frame, host, mono, generation=generation)
+            elif frames:
+                with self.lock:
+                    if generation == self.serial_generation[kind]:
+                        self.state[kind]['pressure'] = decode_pressure(frames[-1]).tolist()
             return
         for msg in parser.feed(data,host,mono):
             if generation!=self.serial_generation[kind]:break
@@ -542,7 +575,7 @@ class Devices:
                     self.last_pose_preview=time.monotonic()
                     self._note_preview(0)
                     self.state['pose']=pose;self.previews[0]=preview
-                    if self.session:self.session.pose(pose)
+                    if self.session and 'glove' in self.session.glove_streams:self.session.pose(pose)
         except Exception as exc:
             with self.lock:self.state['pose']={'detected':False,'model_ready':False,'message':f'手姿模型未启动：{exc}'}
         finally:
@@ -677,12 +710,21 @@ class Devices:
             self.baseline_samples=[];self.pressure_baseline_samples=[];self.baseline_until=time.monotonic()+3;self.contact=False
             self.state['notice']='开始记录基线：请保持手套不接触物体，静置3秒'
 
+    def recording_glove_streams(self):
+        if not self.config.get('glove_right_port_override'):
+            return ('glove',)
+        if self.config.get('glove_port_override') or self.state['glove']['connected']:
+            return ('glove', 'glove_right')
+        return ('glove_right',)
+
     def recording_blocker(self):
         """Use the same source-readiness check in the UI and at record start."""
         with self.lock:
             if self.state['mode'] != 'live':
                 return '请先返回实时模式'
-            for kind, label in (('camera','头戴双目'), ('glove','左手手套')):
+            labels = {'camera':'头戴双目', 'glove':'左手手套', 'glove_right':'右手手套'}
+            for kind in ('camera', *self.recording_glove_streams()):
+                label = labels[kind]
                 source = self.state[kind]
                 if not source['connected']:
                     return f'{label}：{source.get("message") or "未连接"}。可在预览下方重选串口。'
@@ -700,6 +742,10 @@ class Devices:
             blocker = self.recording_blocker()
             if blocker:
                 raise ValueError(blocker)
+            gloves = self.recording_glove_streams()
+            if 'glove' not in gloves and metadata.get('contact_calibration'):
+                raise ValueError('视触复核使用左手手套，可关闭视触校准后录制右手')
+            metadata['glove_sides'] = ['left' if kind == 'glove' else 'right' for kind in gloves]
             metadata['object_id']=safe_id(metadata.get('object_id',''))
             metadata['scene_id']=safe_id(metadata.get('scene_id','scene_001'))
             split=metadata.get('split','train')
@@ -756,8 +802,11 @@ class Devices:
             if seq>cursor:
                 out.append([seq,mono,score])
                 newest=max(newest,seq)
-        g=self.state['glove']
-        return {'cursor':newest,'samples':out,
+        with self.lock:
+            g = dict(self.state['glove'])
+            right = dict(self.state['glove_right'])
+        right['stale'] = not right['connected'] or time.monotonic_ns()-right.get('last_data_mono_ns',0)>3_000_000_000
+        return {'cursor':newest,'samples':out,'glove_right':right,
                 'window_reset':bool(cursor>0 and seqs and seqs[0]>cursor),
                 'glove_stale':not g.get('connected') or time.monotonic_ns()-g.get('last_data_mono_ns',0)>3_000_000_000,
                 'glove':{'values':g.get('values'),'offsets':g.get('offsets'),
@@ -798,7 +847,7 @@ class Devices:
                           'capturing':self.probe is not None,
                           'sequence':self._probe_sequence_summary(),
                           'motion_calibration_running':self._motion_calibration_running()}
-            for kind in ('camera','glove'):
+            for kind in self.serial_generation:
                 out[kind]['stale']=(time.monotonic_ns()-out[kind].get('last_data_mono_ns',0))/1e9>3
             if not self.latest[0] or time.monotonic()-self.latest[0]['arrived']>2:
                 out['pose']['detected']=False;out['pose']['message']='等待左手进入实时画面'

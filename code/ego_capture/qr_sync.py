@@ -179,7 +179,9 @@ def camera_clock(rows, name, source, start, duration):
 
 
 def glove_clock(folder, start, duration):
-    signals = folder / 'derived/glove_signals.npz'
+    sides = read_json(folder / 'metadata.json').get('glove_sides', ['left'])
+    kind = 'glove_right' if sides == ['right'] else 'glove'
+    signals = folder / 'derived' / (kind + '_signals.npz')
     if not signals.is_file():
         raise ValueError('未找到手套接收时间轴，请先完成录制整理')
     with np.load(signals, allow_pickle=False) as data:
@@ -188,6 +190,7 @@ def glove_clock(folder, start, duration):
             (np.diff(receipt) < 0).any() or receipt[0] < 0 or receipt[-1] > duration):
         raise ValueError('手套接收时间轴缺失或无效')
     return {'source': 'serial_host_receipt', 'record_count': int(receipt.size),
+            'hand_side': 'right' if kind == 'glove_right' else 'left',
             'host_mono_at_origin_s': start, 'scale': 1.0, 'first_session_s': float(receipt[0]),
             'last_session_s': float(receipt[-1]), 'internal_sample_clock_available': False,
             'sensor_to_receipt_offset_ms': None}

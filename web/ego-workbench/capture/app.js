@@ -62,24 +62,29 @@ function queueRecordedPressure(time, text) {
     paintRecordedPressure(null, text);
     return;
   }
-  latestPressure = {id, time};
+  latestPressure = {id, time, hand:$('recordedPressureHand').value};
   if (pressureTimer) return;
   pressureTimer = setTimeout(async () => {
     pressureTimer = null;
     const generation = ++pressureGeneration;
-    const {id, time} = latestPressure;
+    const {id, time, hand} = latestPressure;
     pressureController?.abort();
     pressureController = new AbortController();
     try {
-      const result = await api('/api/recorded-tactile?' + new URLSearchParams({id, time}),
+      const result = await api('/api/recorded-tactile?' + new URLSearchParams({id, time, hand}),
                                {signal:pressureController.signal});
       if (generation === pressureGeneration && result.sessionId === id && id === reviewSessionId &&
-          $('reviewAnnotations').open) paintRecordedPressure(result.sample);
+          $('recordedPressureHand').value === hand && $('reviewAnnotations').open) paintRecordedPressure(result.sample);
     } catch (error) {
       if (generation === pressureGeneration) paintRecordedPressure(null, error.message);
     }
   }, 85);
 }
+$('recordedPressureHand').onchange = () => {
+  paintRecordedPressure(null, '正在读取手套数据…');
+  queueRecordedPressure(reviewTimeS);
+};
+
 let importPolling = false, lastImportPoll = 0;
 async function loadImports() {
   if (importPolling || $('importPanel').hidden || !$('directory').classList.contains('active')) return;
@@ -161,7 +166,7 @@ function renderQualityJob(job, pending = false) {
   const reviewPending = !currentIntake || currentIntake.needs_review || exoPending;
   const processed = Boolean(record.processed);
   const hasStereo = record.quality?.stereo_pairs_paired > 0;
-  const hasGlove = record.quality?.glove_valid_frames > 0;
+  const hasGlove = record.quality?.glove_valid_frames > 0 || record.quality?.glove_right_valid_frames > 0;
   const hasReview = processed && (hasStereo || hasGlove);
   const needsReprocess = Boolean(currentIntake?.needs_reprocess);
   const canContinue = hasReview && !busy && !failed && !reviewPending && !needsReprocess;
@@ -221,7 +226,9 @@ async function loadQualityDetail(id) {
   const qc = record.quality;
   $('qcMetrics').hidden = !qc;
   $('qcStereoCount').textContent = qc?.stereo_pairs_paired ?? '—';
-  $('qcGloveCount').textContent = qc?.glove_valid_frames ?? '—';
+  $('qcGloveCount').textContent = qc?.glove_right_valid_frames
+    ? (qc.glove_valid_frames ? '左 ' + qc.glove_valid_frames + ' · ' : '') + '右 ' + qc.glove_right_valid_frames
+    : qc?.glove_valid_frames ?? '—';
   $('qcContactCount').textContent = Array.isArray(qc?.contact_candidates) ? qc.contact_candidates.length : '—';
   $('qualitySummary').textContent = qc ? JSON.stringify(qc, null, 1) : '这条录制还没有整理报告。';
   renderFacts('qcOriginalSetup', [['随录标定', '正在读取…']]);
@@ -402,8 +409,9 @@ function renderLiveSources() {
         id:row.port, label:row.port + (row.description && row.description !== row.port ? ' · ' + row.description : '')
       }))
       : (liveSources?.video || []).map(row => ({...row, label:row.label + (row.virtual ? ' · 虚拟相机' : '')}));
-    const automatic = serialRole ? state?.[role]?.port : null;
-    select.replaceChildren(new Option(serialRole ? '自动识别' + (automatic ? ' · ' + automatic : '') : '不使用', ''),
+    const automatic = serialRole && serialRole !== 'glove_right';
+    const activePort = automatic ? state?.[role]?.port : null;
+    select.replaceChildren(new Option(automatic ? '自动识别' + (activePort ? ' · ' + activePort : '') : '不使用', ''),
       ...choices.map(row => new Option(row.label, row.id)));
     if (selected && !choices.some(row => row.id === selected)) {
       select.add(new Option(serialRole ? selected + ' · 未连接' : '已选相机 · 未连接', selected));
@@ -457,8 +465,8 @@ for (const select of sourceSelects) {
   };
 }
 
-function paintGlove(grid) {
-  const canvas = $('gloveRawPreview');
+function paintGlove(grid, canvas) {
+
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   if (!Array.isArray(grid) || !grid.length || !grid[0]?.length) return null;
@@ -473,12 +481,12 @@ function paintGlove(grid) {
   }));
   return peak;
 }
-function renderQuickGlove(g, stale) {
-  const peak = paintGlove(stale ? null : g?.pressure);
-  const status = $('gloveLiveStatus');
+function renderQuickGlove(g, stale, right = false) {
+  const peak = paintGlove(stale ? null : g?.pressure, $(right ? 'gloveRightRawPreview' : 'gloveRawPreview'));
+  const status = $(right ? 'gloveRightLiveStatus' : 'gloveLiveStatus');
   status.dataset.ready = String(peak !== null);
   const message = peak === null
-    ? state?.glove?.message || '等待手套数据'
+    ? state?.[right ? 'glove_right' : 'glove']?.message || '等待手套数据'
     : '触觉数据接收中 · 原始峰值 ' + peak + (g.skeleton_pose ? ' · 骨架有输出' : '');
   if (status.textContent !== message) status.textContent = message;
 }
@@ -2707,6 +2715,13 @@ async function loadSessionDetail(id) {
     reviewDuration = Number(detail.metadata?.duration_s) || 0;
     reviewTaskRange = detail.task_range || null;
     $('reviewContactCalibration').hidden = !detail.metadata?.contact_calibration;
+    const hands = detail.metadata?.glove_sides || ['left'];
+    const handPicker = $('recordedPressureHand');
+    for (const option of handPicker.options) option.disabled = !hands.includes(option.value);
+    if (!hands.includes(handPicker.value) || position === null) handPicker.value = hands[0];
+    $('recordedPressureHandField').hidden = !hands.includes('right');
+    $('reviewTouchEvents').hidden = !hands.includes('left');
+    $('reviewTouchEventSide').hidden = hands.length < 2;
     reviewFrames = [...(detail.frames || [])].sort((a,b) => a.t_s-b.t_s);
     renderReviewExo(detail.exo_views || []);
     const reviewScope = reviewTaskRange ? '正式任务 ' + (reviewTaskRange[1] - reviewTaskRange[0]).toFixed(1) + ' s'
@@ -2855,6 +2870,11 @@ function updateReviewAnnotations() {
   if (!opening || !$('review').classList.contains('active') || !reviewSessionId) return;
   loadManualEvents();
   if (reviewTimeS !== null) queueRecordedPressure(reviewTimeS);
+  if ($('reviewTouchEvents').hidden) {
+    reviewEventView?.clear();
+    reviewEventView = null;
+    return;
+  }
   if (!reviewQuality || !window.TactileEventReview) {
     reviewEventView?.clear();
     reviewEventView = null;
@@ -3759,6 +3779,11 @@ async function pollTouch() {
     for (const s of t.samples) touchBuf.push(s);
     while (touchBuf.length > 600) touchBuf.shift();
     if ($('liveMore').open && !$('live').hidden && !$('directory').hidden) drawTouch(touchBuf);
+    if (t.glove_right && state) {
+      state.glove_right = t.glove_right;
+      if (!$('live').hidden && !$('directory').hidden)
+        renderQuickGlove(t.glove_right, t.glove_right.stale, true);
+    }
     if (t.glove && state) {
       state.glove = Object.assign({}, state.glove, t.glove);
       const g = t.glove;
@@ -3798,7 +3823,10 @@ async function pollTouch() {
     if (!t.glove_stale) markStale(0, 'touchStale');
   } catch (e) { if (!touchStaleSince) touchStaleSince = Date.now(); }
   finally {
-    if (markStale(touchStaleSince, 'touchStale')) renderQuickGlove(null, true);
+    if (markStale(touchStaleSince, 'touchStale')) {
+      renderQuickGlove(null, true);
+      renderQuickGlove(null, true, true);
+    }
     touchBusy = false;
   }
 }

@@ -57,13 +57,16 @@ class Session:
         self.external_bytes = None
         self.config=config;self.lock=threading.RLock();self.closed=False;self.byte_count=0
         self.start_ns=time.time_ns();self.start_mono_ns=time.monotonic_ns()
+        sides = metadata.get('glove_sides', ['left'])
+        self.glove_streams = tuple('glove' if side == 'left' else 'glove_right' for side in sides)
         self.metadata=dict(metadata,session_id=self.id,created_at=dt.datetime.now(dt.timezone.utc).isoformat(),
                            start_host_ns=self.start_ns,start_mono_ns=self.start_mono_ns,status='recording',
-                           evidence='real_devices',hand='Left',pose_source='vision_estimate',
+                           evidence='real_devices',hand='Left' if 'left' in sides else 'Right',
+                           pose_source='vision_estimate' if 'left' in sides else 'unavailable',
                            clock_alignment='host_receipt_unverified',raw_glove_units='unknown',
                            pose_metric_world_valid=False,format_version=1)
         self.files={};self.csvs={}
-        for kind in ('camera','glove'):
+        for kind in ('camera', 'glove', *(kind for kind in self.glove_streams if kind != 'glove')):
             self.files[kind]=open(self.path/f'{kind}.bin','xb')
             f=open(self.path/f'{kind}-reads.csv','w',newline='',encoding='utf-8');self.files[kind+'_csv']=f
             w=csv.writer(f);w.writerow(['host_ns','host_mono_ns','elapsed_s','offset','length']);self.csvs[kind]=w

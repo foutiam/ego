@@ -70,6 +70,8 @@ class StationDevices(Devices):
             blocker = self.recording_blocker()
             if blocker:
                 raise ValueError(blocker)
+            if contact_calibration and 'glove' not in self.recording_glove_streams():
+                raise ValueError('视触复核使用左手手套，可关闭视触校准后录制右手')
             number = self.sequence + 1
             # Reserve before opening streams, so a reset or deletion cannot reuse an ID.
             dump_json(self.sequence_file, {'last_recording': number})
@@ -133,7 +135,7 @@ class StationDevices(Devices):
     # -- baselines ---------------------------------------------------------
     def _capture_basis(self):
         basis = {}
-        for kind in ('camera', 'glove'):
+        for kind in self.serial_generation:
             s = self.state[kind]
             basis[kind] = {'mono_ns': time.monotonic_ns(),
                            'frames': int(s.get('frames', 0)),
@@ -168,6 +170,7 @@ class StationDevices(Devices):
                 'stereo': dict(port=self.state['camera'].get('port'), camera_serial=self.identity.get('serial'),
                                streams={'cam0': '/0', 'cam1': '/1'}),
                 'glove': dict(port=self.state['glove'].get('port')),
+                'glove_right': dict(port=self.state['glove_right'].get('port')),
                 'exo': {role: dict(feed.source) for role, feed in self.exo.feeds.items()},
             })
             from .guided_capture import PROFILES, object_profile
@@ -208,7 +211,7 @@ class StationDevices(Devices):
                                                                 s.start_mono_ns)
             quality = {'counting': {'note': COUNTING_NOTE,
                                     'session_start_mono_ns': start_mono}}
-            for kind in ('camera', 'glove'):
+            for kind in ('camera', *s.glove_streams):
                 quality[kind] = {'session': self._session_counts(kind, s.start_mono_ns),
                                  'since_connection': dict(self.state[kind]),
                                  'counting_note': COUNTING_NOTE}
@@ -226,7 +229,7 @@ class StationDevices(Devices):
         if self.session:
             out['recording']['per_device'] = {
                 kind: self._session_counts(kind, self.session.start_mono_ns)
-                for kind in ('camera', 'glove')}
+                for kind in ('camera', *self.session.glove_streams)}
             out['recording']['counting_note'] = COUNTING_NOTE
             out['recording']['limits_enabled'] = self.session.enforce_recording_limits
             out['recording']['contact_phase'] = self.contact_phase()

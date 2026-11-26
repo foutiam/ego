@@ -14,7 +14,7 @@ from collections import OrderedDict
 
 import cv2
 import numpy as np
-from .protocol import VisioDecoder, GloveDecoder, protobuf, first
+from .protocol import VisioDecoder, GloveDecoder, glove_side, protobuf, first
 from .devices import VideoDecoder
 from .pose import HandPose
 from .storage import contact_calibration_windows, dump_json, recorded_task_range
@@ -140,7 +140,8 @@ def process_session(path, config, progress=lambda _:None, infer_pose=True, *, pu
     if channel_file.exists():
         parser.channels={int(k):dict(c,schema_data=base64.b64decode(c['schema_data'])) for k,c in read_json(channel_file).items()}
     recorded_sdk=(path/'openxr_skeleton.jsonl').exists() and (path/'openxr_skeleton.jsonl').stat().st_size>0
-    pose_model=HandPose(config['hand']) if infer_pose and not recorded_sdk else None
+    sides = meta.get('glove_sides', ['left'])
+    pose_model=HandPose(config['hand']) if infer_pose and not recorded_sdk and 'left' in sides else None
     origin=meta['start_mono_ns'];fps=config['training']['sample_fps'];start=time.monotonic();written=0
     packet_clocks = [OrderedDict(), OrderedDict()]
     unmatched_frame_clocks = 0
@@ -203,11 +204,26 @@ def process_session(path, config, progress=lambda _:None, infer_pose=True, *, pu
                         if written>2*1024**3 or shutil.disk_usage(path).free<config['minimum_free_bytes']:raise ValueError('达到处理存储上限')
         glove=GloveDecoder();signals=[];raw_values=[];times=[]
         offsets=config['contact_byte_offsets']
-        for data,host,mono in raw_reads(path,'glove'):
-            for raw,end in glove.feed(data):
-                raw_values.append(np.frombuffer(raw,dtype=np.uint8)[offsets].copy());times.append((mono-origin)/1e9)
-        if not raw_values:raise ValueError('手套记录中没有有效帧')
-        values=np.array(raw_values,dtype=float);times=np.array(times);cal=read_json(path/'calibration.json')
+        if 'left' in sides:
+            for data,host,mono in raw_reads(path,'glove'):
+                for raw,end in glove.feed(data):
+                    if 'glove_sides' in meta and glove_side(raw) != 'left':
+                        raise ValueError('左手串口录制包含非左手数据')
+                    raw_values.append(np.frombuffer(raw,dtype=np.uint8)[offsets].copy());times.append((mono-origin)/1e9)
+            if not raw_values:
+                raise ValueError('左手手套记录中没有有效帧')
+        right = GloveDecoder()
+        if 'right' in sides:
+            right_times = []
+            for data, _, mono in raw_reads(path, 'glove_right'):
+                for frame, _ in right.feed(data):
+                    if glove_side(frame) != 'right':
+                        raise ValueError('右手串口录制包含非右手数据')
+                    right_times.append((mono-origin)/1e9)
+            if not right_times:
+                raise ValueError('右手手套记录中没有有效帧')
+            np.savez_compressed(target/'glove_right_signals.npz', time_s=np.asarray(right_times))
+        values=np.asarray(raw_values,dtype=float).reshape(-1,len(offsets));times=np.array(times);cal=read_json(path/'calibration.json')
         if calibration_windows:
             task_samples = ((times >= task_range[0]) & (times < task_range[1])) if task_range else np.zeros(len(times), dtype=bool)
         else:
@@ -215,10 +231,14 @@ def process_session(path, config, progress=lambda _:None, infer_pose=True, *, pu
         task_times = times[task_samples]
         baseline=cal.get('touch_baseline')
         baseline_source='captured_rest_calibration'
-        if baseline is None:
-            baseline_mask = task_samples & (times <= task_times[0] + 2) if len(task_times) else (times <= times[0] + 2)
-            baseline=np.median(values[baseline_mask],axis=0);baseline_source='first_two_seconds_unverified'
-        score=np.median(np.maximum(values-np.asarray(baseline),0),axis=1)
+        if not times.size:
+            score = np.empty(0)
+            baseline_source = 'left_not_recorded'
+        else:
+            if baseline is None:
+                baseline_mask = task_samples & (times <= task_times[0] + 2) if len(task_times) else (times <= times[0] + 2)
+                baseline=np.median(values[baseline_mask],axis=0);baseline_source='first_two_seconds_unverified'
+            score=np.median(np.maximum(values-np.asarray(baseline),0),axis=1)
         intervals=[];active=False;on=None;change=0
         for t,s in zip(task_times,score[task_samples]):
             desired=s>config['contact_off_delta'] if active else s>=config['contact_on_delta']
@@ -246,6 +266,7 @@ def process_session(path, config, progress=lambda _:None, infer_pose=True, *, pu
             (target/name).write_text(''.join(json.dumps(x,ensure_ascii=False,allow_nan=False)+'\n' for x in items),encoding='utf-8')
         quality={'session_id':meta['session_id'],'camera_valid_messages':parser.good,'camera_invalid_or_partial':parser.bad,
                  'glove_valid_frames':glove.good,'glove_checksum_failures':glove.bad,'sampled_images':len(frames),
+                 'glove_right_valid_frames':right.good,'glove_right_checksum_failures':right.bad,
                  # Two clock bases, reported separately and never merged into a synchronisation claim.
                  # `device` is the camera's own sampled timestamp (the window the pairing decision uses)
                  # and `receipt` is when this host received each message; neither is an exposure time.
@@ -262,10 +283,13 @@ def process_session(path, config, progress=lambda _:None, infer_pose=True, *, pu
                  'stereo_pair_clock_basis':'device_and_receipt_deltas_are_clocks_not_exposure_synchronisation',
                  'detected_left_hand_frames':sum(p.get('detected',False) for p in poses),
 
-                 'contact_candidates':intervals,'baseline_source':baseline_source,'pose_source':'recorded_sdk_wrist_local_not_camera_aligned' if recorded_sdk else 'vision_estimate',
+                 'contact_candidates':intervals,'baseline_source':baseline_source,
+                 'pose_source':'recorded_sdk_wrist_local_not_camera_aligned' if recorded_sdk else
+                               'vision_estimate' if 'left' in sides else 'unavailable',
                  'recorded_sdk_available':recorded_sdk,'vision_pose_inference_executed':pose_model is not None,
                  'clock_alignment':'host_receipt_not_sensor_sync','processing_seconds':time.monotonic()-start,
-                 'raw_sha256':{kind:sha256_file(path/f'{kind}.bin') for kind in ('camera','glove')}}
+                 'raw_sha256':{kind:sha256_file(path/f'{kind}.bin') for kind in
+                               ('camera', 'glove', *(['glove_right'] if 'right' in sides else []))}}
         dump_json(target / ('quality.json' if publish_quality else REVIEW_DRAFT), quality)
         progress('画面与触觉数据已准备')
         return quality

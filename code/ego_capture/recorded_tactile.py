@@ -30,8 +30,8 @@ def _read_index(path, size, mtime_ns):
     return rows
 
 
-def _packet_at(folder, target):
-    index_file = folder / 'glove-reads.csv'
+def _packet_at(folder, target, kind='glove'):
+    index_file = folder / f'{kind}-reads.csv'
     stat = index_file.stat()
     with GLOVE_INDEX_LOCK:
         rows = _read_index(index_file, stat.st_size, stat.st_mtime_ns)
@@ -43,7 +43,7 @@ def _packet_at(folder, target):
     length = int(window[-1, 1] + window[-1, 2]) - offset
     if length > 4 * 1024 ** 2:
         raise ValueError('所选时刻的手套数据块过大')
-    with (folder / 'glove.bin').open('rb') as stream:
+    with (folder / f'{kind}.bin').open('rb') as stream:
         stream.seek(offset)
         data = stream.read(length)
     decoder = GloveDecoder()
@@ -146,16 +146,19 @@ def _finger_scores(frame, calibration):
     return scores
 
 
-def recorded_hand_at(folder, origin, time_s, *, timing=None, camera_axes=None):
+def recorded_hand_at(folder, origin, time_s, *, timing=None, camera_axes=None, hand='left'):
+    if hand not in ('left', 'right'):
+        raise ValueError('请选择左手或右手')
+    kind = 'glove' if hand == 'left' else 'glove_right'
     target = origin + round(time_s * 1e9)
-    adjusted = (timing or {}).get('status') == 'applied'
+    adjusted = hand == 'left' and (timing or {}).get('status') == 'applied'
     visual_s = move_between_camera_axes(time_s, *camera_axes) if adjusted and camera_axes is not None else time_s
     tactile_s = raw_touch_time(visual_s, timing) if adjusted else time_s
     tactile_target = origin + round(tactile_s * 1e9)
     sample = dict(grid=None, emf=None, finger_scores={}, pressure_baseline=None,
                   gloveStatus='此时刻附近没有手套数据帧。')
     try:
-        packet = _packet_at(folder, tactile_target)
+        packet = _packet_at(folder, tactile_target, kind)
     except FileNotFoundError:
         packet = None
         sample['gloveStatus'] = '录制未保存可读取的手套原始数据。'
@@ -168,12 +171,14 @@ def recorded_hand_at(folder, origin, time_s, *, timing=None, camera_axes=None):
             packet = None
     if packet is not None:
         stamp, frame = packet
-        path = folder / 'calibration.json'
-        try:
-            stat = path.stat()
-            calibration = _recorded_calibration(path, stat.st_size, stat.st_mtime_ns)
-        except FileNotFoundError:
-            calibration = {}
+        calibration = {}
+        if hand == 'left':
+            path = folder / 'calibration.json'
+            try:
+                stat = path.stat()
+                calibration = _recorded_calibration(path, stat.st_size, stat.st_mtime_ns)
+            except FileNotFoundError:
+                pass
         raw_s = (stamp - origin) / 1e9
         sample_s = map_touch_time(raw_s, timing) if adjusted else raw_s
         sample.update(timeS=sample_s, rawTimeS=raw_s, timingApplied=adjusted,
@@ -181,5 +186,7 @@ def recorded_hand_at(folder, origin, time_s, *, timing=None, camera_axes=None):
                       finger_scores=_finger_scores(frame, calibration),
                       pressure_baseline=(calibration.get('touch_pressure_baseline') or {}).get('grid'),
                       gloveStatus='')
-    sample['skeleton_pose'], sample['skeletonStatus'] = _skeleton_at(folder, origin, target)
+    sample['hand'] = hand
+    sample['skeleton_pose'], sample['skeletonStatus'] = (_skeleton_at(folder, origin, target) if hand == 'left'
+                                                       else (None, '当前录制保存右手原始触觉和 EMF，右手 SDK 骨架未接入。'))
     return sample

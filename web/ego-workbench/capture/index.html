@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ego · 双目与手套采集</title><link rel="stylesheet" href="./style.css?v=capture-multiview-1"></head>
+<title>Ego · 双目与手套采集</title><link rel="stylesheet" href="./style.css?v=capture-dual-glove-1"></head>
 <body>
 <nav id="standaloneLinks" class="capture-tools release-links" aria-label="工作台" hidden>
   <a href="/ego-capture/" aria-current="page">采集与处理</a>
@@ -19,7 +19,7 @@
 <main>
 <aside id="jobPanel" class="job-panel hidden"><span class="spinner"></span>
 <div><strong id="jobTitle"></strong><p id="jobText"></p></div></aside>
-<div id="notice" role="status" aria-live="polite">连接双目相机和左手手套后，画面会自动出现。</div>
+<div id="notice" role="status" aria-live="polite">连接双目相机和手套后，画面会自动出现。</div>
 <div id="originBanner" role="alert" class="hidden"></div>
 
 <section id="directory" class="page active" role="tabpanel" aria-labelledby="tabDirectory">
@@ -97,7 +97,12 @@
 <article class="card quick-glove">
 <div><h2>左手手套</h2><p id="gloveLiveStatus" class="muted">等待手套数据</p></div>
 <div class="glove-preview" aria-hidden="true"><canvas id="gloveRawPreview" width="230" height="120"></canvas></div>
-<label>手套串口<select data-capture-serial="glove" aria-label="手套串口" disabled><option value="">自动识别</option></select></label>
+<label>左手串口<select data-capture-serial="glove" aria-label="左手手套串口" disabled><option value="">自动识别</option></select></label>
+</article>
+<article class="card quick-glove">
+<div><h2>右手手套</h2><p id="gloveRightLiveStatus" class="muted">选择右手串口后连接</p></div>
+<div class="glove-preview" aria-hidden="true"><canvas id="gloveRightRawPreview" width="230" height="120"></canvas></div>
+<label>右手串口<select data-capture-serial="glove_right" aria-label="右手手套串口" disabled><option value="">不使用</option></select></label>
 </article>
 <details class="card live-qr" id="liveQrPanel"><summary>同步二维码</summary>
 <div class="card-title"><div class="qr-actions">
@@ -320,8 +325,12 @@
 <p id="manualEventStatus" class="muted" role="status"></p>
 <div id="manualEventList" class="manual-event-list"></div>
 <div class="recorded-tactile-layout">
+<div id="reviewTouchEvents">
+<p id="reviewTouchEventSide" class="muted" hidden>触觉事件使用左手数据。</p>
 <div id="eventReview" class="muted">展开后读取所选区间的触觉事件。</div>
+</div>
 <div class="recorded-pressure"><strong>手套原始压感</strong>
+<label id="recordedPressureHandField" hidden>手套<select id="recordedPressureHand"><option value="left">左手</option><option value="right">右手</option></select></label>
 <canvas id="recordedPressure" width="220" height="253" aria-label="当前回放时间的手套原始触觉矩阵"></canvas>
 <p id="recordedPressureTime" class="muted">定位到某一时刻后显示。</p>
 <div class="recorded-hand">
@@ -601,4 +610,4 @@
 <script src="./review_event_view.js?v=contact-task-alignment"></script>
 <script src="./recorded-hand-view.js?v=capture-review-20261116-4"></script>
 <script src="./qr-renderer.js"></script><script src="./qr-timecode.js?v=4"></script>
-<script src="./app.js?v=capture-phone-intrinsics-1"></script><script src="./guided-capture.js?v=capture-review-20261116-4"></script><script src="./exo-setup.js?v=exo-auto-1"></script><script src="./contact-calibration.js?v=capture-flow-2"></script><script src="./station-paths.js?v=exo-station-video"></script></body></html>
+<script src="./app.js?v=capture-dual-glove-1"></script><script src="./guided-capture.js?v=capture-review-20261116-4"></script><script src="./exo-setup.js?v=exo-auto-1"></script><script src="./contact-calibration.js?v=capture-flow-2"></script><script src="./station-paths.js?v=exo-station-video"></script></body></html>

@@ -18,6 +18,12 @@ PRESSURE_SIZE = 23 * 20
 EMF_OFFSET = 466
 EMF_SIZE = 80
 CHECKSUM_OFFSET = 546
+GLOVE_HAND_SIDES = {0: 'right', 1: 'left'}
+
+
+def glove_side(frame):
+    """Return the firmware side from an already validated glove frame."""
+    return GLOVE_HAND_SIDES.get(frame[EMF_OFFSET + 9])
 
 
 def _require_glove_frame(frame: bytes | bytearray | memoryview) -> bytes:

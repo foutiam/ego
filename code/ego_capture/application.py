@@ -456,7 +456,7 @@ class Application:
                 continue
             if not file.is_file() or file.resolve() != file or file.is_symlink():
                 raise ValueError(f'缺少或无法读取会话文件 {name}')
-            if name in required and file.stat().st_size == 0:
+            if name in required and name != 'glove.bin' and file.stat().st_size == 0:
                 raise ValueError(f'会话文件为空 {name}')
             files.append(file)
         meta = read_json(source / 'metadata.json')
@@ -468,13 +468,28 @@ class Application:
                 or type(duration) not in (int, float) or not math.isfinite(duration) or duration <= 0
                 or any(type(meta.get(key)) is not int or meta[key] <= 0 for key in ('start_host_ns', 'start_mono_ns'))):
             raise ValueError('会话身份、保存状态或时钟记录不完整')
-        for kind in ('camera', 'glove'):
+        sides = meta.get('glove_sides', ['left'])
+        if sides not in (['left'], ['right'], ['left', 'right'], ['right', 'left']):
+            raise ValueError('录制手套来源不合法')
+        if 'right' in sides:
+            for name in ('glove_right.bin', 'glove_right-reads.csv'):
+                file = source / name
+                if not file.is_file() or file.resolve() != file or file.is_symlink() or not file.stat().st_size:
+                    raise ValueError(f'缺少或无法读取会话文件 {name}')
+                files.append(file)
+        if 'left' in sides and not (source / 'glove.bin').stat().st_size:
+            raise ValueError('左手手套原始流为空')
+        if 'left' not in sides and (source / 'glove.bin').stat().st_size:
+            raise ValueError('录制声明与左手手套原始流不符')
+        kinds = ('camera', *(['glove'] if 'left' in sides else []),
+                 *(['glove_right'] if 'right' in sides else []))
+        for kind in kinds:
             with (source / f'{kind}-reads.csv').open(encoding='utf-8-sig', newline='') as handle:
                 rows = csv.DictReader(handle)
                 if (not {'host_ns', 'host_mono_ns', 'elapsed_s', 'offset', 'length'}.issubset(rows.fieldnames or [])
                         or not next(rows, None)):
                     raise ValueError(f'{kind} 缺少接收时间索引')
-        raw_size = sum((source / f'{kind}.bin').stat().st_size for kind in ('camera', 'glove'))
+        raw_size = sum((source / f'{kind}.bin').stat().st_size for kind in kinds)
         if raw_size != meta.get('raw_bytes'):
             raise ValueError('原始流长度与会话记录不符')
         annotation = read_json(source / 'annotations.json')
@@ -1038,7 +1053,7 @@ class Application:
             return dict(serial=serial, video=videos, video_error=error,
                         next_name=devices.next_recording_name, offline=not self.connect_devices,
                         serial_selection={kind: self.config.get(f'{kind}_port_override') or ''
-                                          for kind in ('camera', 'glove')},
+                                          for kind in devices.serial_generation},
                         exo=devices.exo.state())
 
     def _configured_files(self, base, key):
@@ -1347,7 +1362,7 @@ class CaptureRoutes:
                 out = app.devices.snapshot()
                 out.update(token=app.token, job=app.job, output_root=str(app.root),
                            station=app.config.get('station', 'v2'), standalone=app.standalone,
-                           qr_phone_url=app.qr_phone_url, contact_calibration_supported=True,
+                           qr_phone_url=app.qr_phone_url, contact_calibration_supported='glove' in app.devices.recording_glove_streams(),
                            recording_blocker=(app.devices.recording_blocker() if app.connect_devices else
                                               '当前为离线整理模式。连接设备并取消 --offline 后可录制。'),
                            code_root=str(ROOT), git_commit=app.git_commit,
@@ -1499,11 +1514,13 @@ class CaptureRoutes:
                 if meta.get('session_id') != folder.name or not 0 <= time_s <= meta['duration_s']:
                     raise ValueError('触觉时间超出所选录制')
                 from ego_capture.contact_calibration import review_camera_axes, timing_for_recording
-                timing, camera, _ = timing_for_recording(folder, meta) if meta.get('contact_calibration') else ({}, None, None)
+                hand = query.get('hand', ['left'])[0]
+                timing, camera, _ = (timing_for_recording(folder, meta)
+                                     if hand == 'left' and meta.get('contact_calibration') else ({}, None, None))
                 axes = review_camera_axes(folder, meta, camera) if camera else None
                 return self.send(200, dict(sessionId=folder.name, tactileTiming=timing,
                                            sample=recorded_hand_at(folder, meta['start_mono_ns'], time_s,
-                                                                   timing=timing, camera_axes=axes)))
+                                                                   timing=timing, camera_axes=axes, hand=hand)))
             if path == '/api/policy-labels':
                 from ego_capture.policy_labels import policy_labels
                 return self.send(200, policy_labels({
@@ -1673,7 +1690,7 @@ class CaptureRoutes:
                 with dev.lock:
                     if dev.session:
                         raise ValueError('录制中不能切换来源')
-                    if role in ('camera', 'glove'):
+                    if role in dev.serial_generation:
                         dev.bind_serial(role, source)
                     else:
                         dev.exo.bind(role, source)

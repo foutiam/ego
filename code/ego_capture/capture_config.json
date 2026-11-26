@@ -14,6 +14,7 @@
   "glove_pid": 22329,
   "camera_port_override": null,
   "glove_port_override": null,
+  "glove_right_port_override": null,
   "output_root": "recordings",
   "replay_source": null,
   "max_session_seconds": 300,
