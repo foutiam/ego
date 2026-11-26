@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ego · 双目与手套采集</title><link rel="stylesheet" href="./style.css?v=capture-dual-glove-1"></head>
+<title>Ego · 双目与手套采集</title><link rel="stylesheet" href="./style.css?v=capture-marker-panel-1"></head>
 <body>
 <nav id="standaloneLinks" class="capture-tools release-links" aria-label="工作台" hidden>
   <a href="/ego-capture/" aria-current="page">采集与处理</a>
@@ -432,16 +432,48 @@
 </div>
 
 <div id="calibAdvanced" class="calib-pane" hidden>
-<article class="card calib-task"><div class="card-title"><h3>手与相机空间标定</h3></div>
-<details class="compact-details"><summary>AprilTag 坐标约定</summary>
-<p>腕部为原点，单位为米。+x 朝手背，+y 朝拇指，+z 朝手指。验证精度需要独立留出点。</p></details>
-<div id="markerLayoutRows" class="muted">正在读取标记…</div>
-<div class="toolbar"><button id="addMarkerRow" class="small">添加标记</button>
-<button id="saveMarkerLayout" class="small">保存位置</button>
-<button id="runMarkerCalibration" class="primary">用实时画面标定</button>
-<button id="useSessionFrame" class="small">用录制帧标定</button></div>
-<div id="markerCalibResult" class="loader-result"></div>
-<p class="muted small-text" id="markerLayoutNote"></p></article>
+<article class="card calib-task marker-panel" aria-labelledby="markerLayoutTitle">
+  <header class="marker-panel-top">
+    <h3 id="markerLayoutTitle">手与相机空间标定</h3>
+    <div class="marker-actions">
+      <button type="button" id="importMarkerLayout">导入位置表 JSON</button>
+      <input id="markerLayoutImportFile" type="file" accept=".json,application/json" hidden>
+      <button type="button" id="addMarkerRow">添加标签</button>
+    </div>
+  </header>
+  <div class="marker-table" aria-label="AprilTag 位置表">
+    <div class="marker-grid marker-table-heading" aria-hidden="true">
+      <span>ID</span><span>边长 mm</span><span>X · 手背外</span><span>Y · 拇指</span><span>Z · 指尖</span><span>姿态</span><span></span>
+    </div>
+    <div id="markerLayoutRows">正在读取标记…</div>
+  </div>
+  <div class="marker-panel-footer">
+    <p id="markerLayoutNote" role="status"></p>
+    <div class="marker-actions">
+      <button type="button" id="saveMarkerLayout">保存位置</button>
+      <button type="button" id="runMarkerCalibration" class="primary">用实时画面标定</button>
+    </div>
+  </div>
+  <div id="markerCalibResult" class="marker-result" hidden>
+    <p id="markerCalibSummary" role="status"></p>
+    <details id="markerCalibDetails" hidden><summary>查看标定诊断</summary><pre id="markerCalibLog"></pre></details>
+  </div>
+  <div class="marker-extra">
+    <details>
+      <summary>用录制帧标定</summary>
+      <div class="marker-session-actions">
+        <select id="markerCalibrationSession" aria-label="用于空间标定的录制会话"></select>
+        <button type="button" id="useSessionFrame" disabled>开始标定</button>
+      </div>
+    </details>
+    <details>
+      <summary>AprilTag 坐标约定</summary>
+      <p><code>wrist_local</code> 以腕部为原点。表格位置和黑框边长用毫米，JSON 用米。</p>
+      <p>手背外法线是 +X，拇指方向是 +Y，指尖方向是 +Z。标签坐标的 +X 朝印刷右侧，+Y 朝下，+Z 指向标签内部。四元数顺序为 x、y、z、w。</p>
+      <p>打印面朝拇指时，标签与手背面垂直。表中的位置是录入值，标定精度需用独立留出点检验。</p>
+    </details>
+  </div>
+</article>
 <details id="probe" class="card compact-details"><summary>手套标定、触觉映射与实时诊断</summary>
 <div class="section-heading"><div><h2>触觉信号</h2><p>实时查看并采集原始触觉响应。手势状态仅作为可复现输入记录，不自动解释为压力或关节角。</p></div><span id="probeVersionTag" class="tag">映射版本 —</span></div>
 <div class="probe-action-grid">
@@ -610,4 +642,4 @@
 <script src="./review_event_view.js?v=contact-task-alignment"></script>
 <script src="./recorded-hand-view.js?v=capture-review-20261116-4"></script>
 <script src="./qr-renderer.js"></script><script src="./qr-timecode.js?v=4"></script>
-<script src="./app.js?v=capture-dual-glove-1"></script><script src="./guided-capture.js?v=capture-review-20261116-4"></script><script src="./exo-setup.js?v=exo-auto-1"></script><script src="./contact-calibration.js?v=capture-flow-2"></script><script src="./station-paths.js?v=exo-station-video"></script></body></html>
+<script src="./app.js?v=capture-marker-panel-1"></script><script src="./guided-capture.js?v=capture-review-20261116-4"></script><script src="./exo-setup.js?v=exo-auto-1"></script><script src="./contact-calibration.js?v=capture-flow-2"></script><script src="./station-paths.js?v=exo-station-video"></script></body></html>

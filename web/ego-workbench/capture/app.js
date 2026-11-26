@@ -2266,34 +2266,43 @@ async function submitEyeAssignment() {
    along wrist +x / +y" is a z column of -x / -y (the payload repeats this as
    marker_axis_convention). */
 const MARKER_AXIS_ZH = {
-  '+x': '手背外法线方向（+x）', '-x': '手心方向（-x）',
-  '+y': '拇指方向（+y）', '-y': '小指方向（-y）',
-  '+z': '手指方向（+z）', '-z': '手腕方向（-z）'
+  '+x': '手背外 +X', '-x': '手心侧 −X',
+  '+y': '拇指侧 +Y', '-y': '小指侧 −Y',
+  '+z': '指尖侧 +Z', '-z': '腕侧 −Z'
 };
 function esc(value) {
   return String(value == null ? '' : value)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
+function markerLayoutStatus(message, state = '') {
+  const note = $('markerLayoutNote');
+  note.dataset.state = state;
+  note.textContent = message;
+}
+function markerLayoutDraft() {
+  return $('markerLayoutNote').dataset.state === 'draft';
+}
+function markMarkerLayoutDraft() {
+  markerLayoutStatus('未保存的位置修改', 'draft');
+}
 async function loadMarkerLayout() {
-  if (!$('markerLayoutRows')) return;
+  if (!$('markerLayoutRows') || markerLayoutDraft()) return;
   try {
     const data = await api('/api/handpose/marker-layout');
     markerDefaultRow = data.default_row || null;
     markerOrientationOptions = data.orientation_options || [];
-    renderMarkerLayout(data);
+    if (!markerLayoutDraft()) renderMarkerLayout(data);
   } catch (e) {
-    $('markerLayoutRows').innerHTML = '<p class="muted">标记位置表读取失败：' + esc(e.message) + '</p>';
+    if (!markerLayoutDraft()) markerLayoutStatus('位置表读取失败：' + e.message, 'error');
   }
 }
-function renderMarkerLayout(data) {
-  markerRows = (data.summary && data.summary.rows) || [];
-  $('markerLayoutRows').innerHTML = markerRows.map((row, index) => markerRowHtml(row, index)).join('')
-    || '<p class="muted">表中没有任何标记行（至少需要一行才能标定）。</p>';
-  $('markerLayoutNote').textContent =
-    (data.loaded_note || '') +
-    ' 坐标系：' + ((data.summary && data.summary.frame_note) || '') +
-    ' 证据等级：' + ((data.summary && data.summary.evidence) || '') +
-    ' · 文件：' + (data.layout_path || '—');
+function renderMarkerLayout(data, draftMessage = '') {
+  markerRows = data.summary?.rows || [];
+  $('markerLayoutRows').innerHTML = markerRows.map(markerRowHtml).join('')
+    || '<p class="marker-empty">暂无标签。可添加标签或导入位置表。</p>';
+  const count = markerRows.length + ' 枚标签';
+  markerLayoutStatus(draftMessage || (data.from_disk ? '已保存 · ' : '默认位置 · ') + count,
+    draftMessage ? 'draft' : 'ready');
 }
 function markerOrientationKey(row) {
   /* Which declared posture a row's quaternion is; 'custom' means it matches none of them, so the
@@ -2313,48 +2322,51 @@ function markerOrientationKey(row) {
   return best;
 }
 function markerOrientationLabel(row) {
-  const summary = (row && row.orientation) || {};
-  if (!summary.face_normal_axis_key) return '';
-  const face = MARKER_AXIS_ZH[summary.face_normal_axis_key] || summary.face_normal_axis_key;
-  const flags = (summary.parallel_to_back_of_hand ? '，与手背面平行' : '') +
-    (summary.perpendicular_to_back_of_hand ? '，与手背面垂直' : '');
-  let text = '打印面法线 → ' + face + flags + ' · 偏离主轴 ' +
-    summary.face_normal_off_axis_deg.toFixed(2) + '°';
-  const footprint = summary.tag_footprint;
-  if (footprint && footprint.dips_below_hand_back) {
-    text += ' · ⚠ 按此中心与边长（' + (footprint.half_side_m * 2000).toFixed(0) +
-      ' mm 边长）标签最低边在 x = ' + (footprint.lowest_edge_x_m * 1000).toFixed(1) +
-      ' mm，低于手背面：要么该偏移指最低边，要么打印边长更小';
+  const orientation = row.orientation;
+  if (!orientation?.face_normal_axis_key) return '';
+  const axis = orientation.face_normal_axis_key;
+  const face = MARKER_AXIS_ZH[axis] || axis;
+  const deviation = orientation.face_normal_off_axis_deg;
+  const footprint = orientation.tag_footprint;
+  let label = '码面朝向 ' + face;
+  if (deviation >= 0.5) label += ' · 偏离 ' + deviation.toFixed(1) + '°';
+  if (orientation.perpendicular_to_back_of_hand && footprint?.dips_below_hand_back) {
+    label += ' · 标签最低边低于手背基准 ' + (-footprint.lowest_edge_x_m * 1000).toFixed(1) + ' mm';
   }
-  return text;
+  return label;
 }
 function markerRowHtml(row, index) {
-  const millimetres = (value) => (value === null || value === undefined ? '' : value.toFixed(1));
+  const millimetres = value => value == null ? '' : +value.toFixed(4);
   const key = markerOrientationKey(row);
   const options = markerOrientationOptions.map(option =>
-    '<option value="' + option.key + '"' + (option.key === key ? ' selected' : '') + '>' +
-    esc(option.label) + '</option>').join('') +
-    '<option value="custom"' + (key === 'custom' ? ' selected' : '') +
-    '>自定义（保留本行四元数）</option>';
-  return '<div class="dataset-row marker-row" data-marker-row="' + index + '">' +
-    '<label>IDX<input data-marker-field="idx" type="number" min="0" max="999" step="1" value="' + row.idx + '"></label>' +
-    '<label>边长 mm<input data-marker-field="side_mm" type="number" min="5" max="500" step="1" value="' + Math.round(row.side_mm) + '"></label>' +
-    '<label>上方 x mm<input data-marker-field="x_mm" type="number" step="1" value="' + millimetres(row.position_mm[0]) + '"></label>' +
-    '<label>拇指侧 y mm<input data-marker-field="y_mm" type="number" step="1" value="' + millimetres(row.position_mm[1]) + '"></label>' +
-    '<label>手指向 z mm<input data-marker-field="z_mm" type="number" step="1" value="' + millimetres(row.position_mm[2]) + '"></label>' +
-    '<label>姿态<select data-marker-field="orientation">' + options + '</select></label>' +
-    '<label>说明<input data-marker-field="note" value="' + esc(row.note) + '"></label>' +
-    '<a class="small" href="' + capturePath(row.print_url) + '" target="_blank" rel="noopener">打印 PNG</a>' +
-    '<button class="small quiet danger" data-marker-remove="' + index + '">删除</button>' +
-    '<span class="muted small-text" data-marker-orientation-text="' + index + '">' +
-    esc(markerOrientationLabel(row)) + '</span></div>';
+    '<option value="' + esc(option.key) + '"' + (option.key === key ? ' selected' : '') + '>' +
+    esc(MARKER_AXIS_ZH[option.face_normal_wrist_axis] || option.label) + '</option>').join('');
+  const orientation = row.orientation?.face_normal_axis_key;
+  const custom = orientation ? '自定义 · ' + (MARKER_AXIS_ZH[orientation] || orientation) : '自定义姿态';
+  const quaternion = (row.quaternion_xyzw || []).map(value => +value.toFixed(6)).join(', ');
+  const xy = row.position_mm;
+  return '<div class="marker-grid marker-row" data-marker-row="' + index + '">' +
+    '<label><span class="marker-field-label">ID</span><input data-marker-field="idx" type="number" min="0" max="999" step="1" value="' + row.idx + '"></label>' +
+    '<label><span class="marker-field-label">边长 mm</span><input data-marker-field="side_mm" type="number" min="5" max="500" step="any" value="' + millimetres(row.side_mm) + '"></label>' +
+    ['X · 手背外','Y · 拇指','Z · 指尖'].map((label, axis) =>
+      '<label><span class="marker-field-label">' + label + '</span><input data-marker-field="' +
+      ['x_mm','y_mm','z_mm'][axis] + '" type="number" step="any" value="' + millimetres(xy[axis]) + '"></label>').join('') +
+    '<label><span class="marker-field-label">姿态</span><select data-marker-field="orientation">' + options +
+    '<option value="custom"' + (key === 'custom' ? ' selected' : '') + '>' + esc(custom) + '</option></select></label>' +
+    '<button type="button" class="small quiet" data-marker-more aria-expanded="false" aria-controls="markerRowMore' + index + '">详情</button>' +
+    '<div class="marker-row-more" id="markerRowMore' + index + '" hidden>' +
+    '<p data-marker-orientation-text>' + esc(markerOrientationLabel(row) || (quaternion ? '四元数 ' + quaternion : '')) + '</p>' +
+    '<label>备注<input data-marker-field="note" value="' + esc(row.note) + '"></label>' +
+    '<div class="marker-actions"><a class="small" data-marker-print href="' + capturePath(row.print_url) +
+    '" target="_blank" rel="noopener">打印标签 PNG</a>' +
+    '<button type="button" class="small quiet danger" data-marker-remove="' + index + '">移除标签</button></div></div></div>';
 }
 function markerPresetQuaternion(key) {
   const option = markerOrientationOptions.find(item => item.key === key);
   return option ? option.quaternion_xyzw : null;
 }
 function readMarkerRows() {
-  const holders = Array.from(document.querySelectorAll('[data-marker-row]'));
+  const holders = Array.from($('markerLayoutRows').querySelectorAll('[data-marker-row]'));
   return holders.map(holder => {
     const field = (name) => {
       const box = holder.querySelector('[data-marker-field="' + name + '"]');
@@ -2372,13 +2384,6 @@ function readMarkerRows() {
     };
   });
 }
-function renderMarkerRowsEdited(note) {
-  renderMarkerLayout({
-    summary: { rows: markerRows, frame_note: 'positions are wrist_local metres',
-               evidence: 'operator_declaration_not_measured' },
-    loaded_note: note, layout_path: ''
-  });
-}
 async function saveMarkerLayout() {
   const rows = readMarkerRows();
   if (!rows.length) return toast('至少需要一行标记位置');
@@ -2386,45 +2391,72 @@ async function saveMarkerLayout() {
     const stored = await post('/api/handpose/marker-layout',
       { layout: { frame: 'wrist_local', markers: rows } });
     renderMarkerLayout(stored);
-    toast('标记位置表已保存：' + rows.length + ' 行（声明值，非实测）');
   } catch (e) { toast('保存失败：' + e.message); }
 }
-function addMarkerLayoutRow() {
-  /* A new row copies the last row's position (a starting point to edit) but starts from the
-     declared back-facing posture, so it does not silently inherit a thumb-facing orientation from
-     the row above it; the posture is visible in the row's select. */
-  const last = markerRows[markerRows.length - 1] ||
-    { idx: 1, side_mm: 60, position_mm: [40, 0, 60] };
-  const nextIdx = Math.trunc(last.idx) + 1;
-  markerRows.push({ idx: nextIdx, side_mm: last.side_mm, side_m: last.side_mm / 1000,
-    position_mm: last.position_mm.slice(), position_m: last.position_mm.map(v => v / 1000),
-    quaternion_xyzw: markerPresetQuaternion('back_normal') ||
-      (markerDefaultRow && markerDefaultRow.quaternion_xyzw) || [0, 0, 1, 0],
-    note: '新行：请填写该标识在手背上的位置，并确认姿态下拉框',
-    print_url: '/api/handpose/marker.png?idx=' + nextIdx });
-  renderMarkerRowsEdited('未保存的编辑（点「保存标记位置表」写入）。');
+async function importMarkerLayout(file) {
+  try {
+    const layout = JSON.parse(await file.text());
+    if (layout?.frame !== 'wrist_local' || !Array.isArray(layout.markers) || !layout.markers.length) {
+      throw new Error('请选择包含标记且坐标系为 wrist_local 的位置表');
+    }
+    const ids = new Set();
+    const isVector = (value, length) =>
+      Array.isArray(value) && value.length === length && value.every(Number.isFinite);
+    const rows = layout.markers.map((row, index) => {
+      const { idx, side_m, position_m, quaternion_xyzw, note } = row || {};
+      if (!Number.isInteger(idx) || idx < 0 || idx > 999 || ids.has(idx) ||
+          !Number.isFinite(side_m) || side_m < 0.005 || side_m > 0.5 ||
+          !isVector(position_m, 3) || position_m.some(value => Math.abs(value) > 1) ||
+          !isVector(quaternion_xyzw, 4) || Math.abs(Math.hypot(...quaternion_xyzw) - 1) > 0.01) {
+        throw new Error('第 ' + (index + 1) + ' 行的 ID、边长、位置或四元数无效');
+      }
+      ids.add(idx);
+      return { idx, side_m, side_mm: side_m * 1000,
+        position_m, position_mm: position_m.map(value => value * 1000), quaternion_xyzw,
+        note: typeof note === 'string' ? note : '', print_url: '/api/handpose/marker.png?idx=' + idx };
+    });
+    renderMarkerLayout({ summary: { rows } }, '已导入 ' + rows.length + ' 枚标签 · 待保存');
+  } catch (error) {
+    toast('导入位置表失败：' + error.message);
+  }
 }
-function removeMarkerLayoutRow(index) {
-  markerRows.splice(index, 1);
-  renderMarkerRowsEdited('未保存的编辑（点「保存标记位置表」写入）。');
+function addMarkerLayoutRow() {
+  const rows = readMarkerRows();
+  const ids = new Set(rows.map(row => row.idx));
+  let idx = 1;
+  while (ids.has(idx)) idx++;
+  if (idx > 999) return toast('标签 ID 已用完');
+  const last = rows.at(-1) || { side_m: 0.06, position_m: [0.04, 0, 0.06] };
+  const row = { idx, side_mm: last.side_m * 1000, position_mm: last.position_m.map(v => v * 1000),
+    quaternion_xyzw: markerPresetQuaternion('back_normal') || markerDefaultRow?.quaternion_xyzw || [0, 0, 1, 0],
+    print_url: '/api/handpose/marker.png?idx=' + idx };
+  const holder = $('markerLayoutRows');
+  holder.querySelector('.marker-empty')?.remove();
+  holder.insertAdjacentHTML('beforeend', markerRowHtml(row, markerRows.length));
+  markerRows.push(row);
+  holder.lastElementChild.querySelector('[data-marker-field="idx"]').focus();
+  markMarkerLayoutDraft();
 }
 async function runMarkerCalibration(useSessionFrame) {
   const payload = {};
   if (useSessionFrame) {
-    const id = $('sessionSelect') && $('calibSyncSession').value;
-    if (!id) return toast('请先在「01 录制目录」或「02 选段与标注」选择录制');
+    const id = $('markerCalibrationSession').value;
+    if (!id) return;
     payload.session_id = id;
   }
   const box = $('markerCalibResult');
-  box.classList.add('show');
-  box.textContent = useSessionFrame ? '正在用所选会话的一帧检测二维码并求解手→视觉位姿…'
-    : '正在用当前实时画面检测二维码并求解手→视觉位姿…';
+  box.hidden = false;
+  box.dataset.state = '';
+  $('markerCalibDetails').hidden = true;
+  $('markerCalibDetails').open = false;
+  $('markerCalibSummary').textContent = markerLayoutDraft()
+    ? '正在标定，使用已保存的位置表…' : '正在检测 AprilTag 并计算位姿…';
   try {
     const report = await post('/api/handpose/marker-calibrate', payload);
     renderMarkerRegistration(report);
   } catch (e) {
-    box.textContent = '标定未完成：' + e.message +
-      '\n注意：没检测到标记不等于标定完成，也不会写入任何默认值。';
+    box.dataset.state = 'error';
+    $('markerCalibSummary').textContent = '标定未完成：' + e.message;
   }
 }
 function renderMarkerRegistration(report) {
@@ -2449,7 +2481,16 @@ function renderMarkerRegistration(report) {
   lines.push('相机：' + JSON.stringify(report.camera || {}));
   (report.notes || []).forEach(note => lines.push('· ' + note));
   lines.push('记录文件：' + (report.record_path || '—'));
-  box.textContent = lines.join('\n');
+  const outcomes = {
+    no_marker: '未检测到已登记的标签',
+    single_marker_no_cross_check: '检测到 1 枚标签，无法交叉核对',
+    consistent: '检测到 ' + report.estimate_count + ' 枚标签，位姿一致',
+    disagree: '检测到 ' + report.estimate_count + ' 枚标签，位姿不一致'
+  };
+  box.dataset.state = agreement.status === 'consistent' ? 'ready' : 'warning';
+  $('markerCalibSummary').textContent = outcomes[agreement.status] || '已生成标定结果';
+  $('markerCalibLog').textContent = lines.join('\n');
+  $('markerCalibDetails').hidden = false;
 }
 
 /* ---- sessions / review / export ---- */
@@ -2478,8 +2519,9 @@ function syncSessionPickers() {
   const calibration = $('calibSyncSession');
   const previousCalibration = calibration.value;
   if ($('sessionSelect').value !== selectedSessionId) $('exportReceipt').hidden = true;
-  for (const picker of ['sessionSelect', 'reviewSession', 'calibSyncSession', 'qualitySession']) {
+  for (const picker of ['sessionSelect', 'reviewSession', 'calibSyncSession', 'qualitySession', 'markerCalibrationSession']) {
     const select = $(picker);
+    const selection = picker === 'markerCalibrationSession' ? (select.value || selectedSessionId) : selectedSessionId;
     select.replaceChildren(new Option('选择录制', ''));
     for (const session of sessions) {
       const name = session.name || session.session_id;
@@ -2490,10 +2532,10 @@ function syncSessionPickers() {
       option.dataset.processed = String(Boolean(session.processed));
       select.add(option);
     }
-    select.value = selectedSessionId;
+    select.value = selection;
     if (!select.value) select.value = '';
   }
-  $('useSessionFrame').disabled = !calibration.value;
+  $('useSessionFrame').disabled = !$('markerCalibrationSession').value;
   if (calibration.value !== previousCalibration) updateIntakeProceed();
   window.refreshContactCalibration?.();
   window.refreshExoReadiness?.();
@@ -3533,26 +3575,54 @@ $('refreshSessions').addEventListener('click', () => loadSessions().catch(error 
    it feeds. The table is written to outputs/capture-station/calibration/marker_layout.json. */
 if ($('addMarkerRow')) $('addMarkerRow').addEventListener('click', addMarkerLayoutRow);
 if ($('saveMarkerLayout')) $('saveMarkerLayout').addEventListener('click', saveMarkerLayout);
-if ($('runMarkerCalibration')) $('runMarkerCalibration').addEventListener('click', () => runMarkerCalibration(false));
-if ($('useSessionFrame')) $('useSessionFrame').addEventListener('click', () => runMarkerCalibration(true));
-if ($('markerLayoutRows')) {
-  $('markerLayoutRows').addEventListener('click', (e) => {
-    const remove = e.target.closest('[data-marker-remove]');
-    if (remove) removeMarkerLayoutRow(+remove.dataset.markerRemove);
-  });
-  /* Changing the posture dropdown updates the row's readout from the declared preset itself, so the
-     page never shows a stale posture between the edit and the save. */
-  $('markerLayoutRows').addEventListener('change', (e) => {
-    const select = e.target.closest('[data-marker-field="orientation"]');
-    if (!select) return;
-    const holder = select.closest('[data-marker-row]');
-    const readout = holder && holder.querySelector('[data-marker-orientation-text]');
-    const option = markerOrientationOptions.find(item => item.key === select.value);
-    if (readout) readout.textContent = option
-      ? (option.label + ' · ' + option.note)
-      : '自定义：保留本行四元数（需重算后才显示法线方向）';
+if ($('importMarkerLayout')) {
+  const input = $('markerLayoutImportFile');
+  $('importMarkerLayout').addEventListener('click', () => input.click());
+  input.addEventListener('change', async () => {
+    const file = input.files[0];
+    input.value = '';
+    if (file) await importMarkerLayout(file);
   });
 }
+if ($('runMarkerCalibration')) $('runMarkerCalibration').addEventListener('click', () => runMarkerCalibration(false));
+$('useSessionFrame').addEventListener('click', () => runMarkerCalibration(true));
+$('markerCalibrationSession').addEventListener('change', (e) => {
+  $('useSessionFrame').disabled = !e.target.value;
+});
+$('markerLayoutRows').addEventListener('click', (e) => {
+  const row = e.target.closest('[data-marker-row]');
+  if (!row) return;
+  const more = e.target.closest('[data-marker-more]');
+  if (more) {
+    const details = $(more.getAttribute('aria-controls'));
+    details.hidden = !details.hidden;
+    more.setAttribute('aria-expanded', String(!details.hidden));
+  }
+  if (e.target.closest('[data-marker-remove]')) {
+    row.remove();
+    if (!$('markerLayoutRows').childElementCount) {
+      $('markerLayoutRows').innerHTML = '<p class="marker-empty">暂无标签。可添加标签或导入位置表。</p>';
+    }
+    markMarkerLayoutDraft();
+  }
+});
+$('markerLayoutRows').addEventListener('input', (e) => {
+  const field = e.target.closest('[data-marker-field]');
+  if (!field) return;
+  const row = field.closest('[data-marker-row]');
+  markMarkerLayoutDraft();
+  if (field.dataset.markerField === 'idx') {
+    const link = row.querySelector('[data-marker-print]');
+    link.hidden = !/^[0-9]{1,3}$/.test(field.value);
+    if (!link.hidden) link.href = capturePath('/api/handpose/marker.png?idx=' + field.value);
+  }
+  if (field.dataset.markerField === 'orientation') {
+    const previous = markerRows[+row.dataset.markerRow];
+    const quaternion = markerPresetQuaternion(field.value) || previous.quaternion_xyzw;
+    row.querySelector('[data-marker-orientation-text]').textContent = quaternion?.length
+      ? '四元数 ' + quaternion.map(value => +value.toFixed(6)).join(', ') : '';
+  }
+});
 /* The 3 s window closes server-side, so the button confirms what was actually saved instead of
    leaving the operator to guess. Both zero references come out of that one window: the byte baseline
    the contact candidate uses, and the 23x20 resting grid the 3D taxel layer subtracts. */

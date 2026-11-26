@@ -285,15 +285,67 @@ tag.hidden,.tag.hidden{display:none}
 @media(max-width:900px){.hand-view{grid-template-columns:1fr}}
 @media(max-width:900px){.pose-grid{grid-template-columns:repeat(2,minmax(130px,1fr))}}
 @media(max-width:560px){.pose-grid{grid-template-columns:1fr}}
-/* Declared marker table (calibration page 02): one row is one printed tag, so the fields are
-   laid out like a table instead of the dataset list's two-column summary row. */
-.marker-row{align-items:flex-end;gap:8px}
-.marker-row label{flex:0 1 108px}
-.marker-row label input{width:100%}
-.marker-row label select{width:100%;max-width:220px}
-.marker-row a.small{align-self:center;color:var(--accent);text-decoration:none}
-.marker-row .small-text{flex:1 1 100%}
-@media(max-width:560px){.marker-row label{flex:1 1 45%}}
+/* Hand-to-camera calibration */
+.marker-panel { padding: clamp(14px, 2.4vw, 24px); }
+.marker-panel-top, .marker-panel-footer, .marker-actions, .marker-session-actions {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+}
+.marker-panel-top, .marker-panel-footer { justify-content: space-between; gap: 14px; }
+.marker-panel-top h3 { font-size: 18px; margin: 0; }
+.marker-table {
+  border: 1px solid var(--line); border-radius: 10px; background: var(--bg);
+  margin: 14px 0; overflow: hidden;
+}
+.marker-grid {
+  display: grid; align-items: center; gap: 10px;
+  grid-template-columns: minmax(52px, .55fr) minmax(70px, .72fr) repeat(3, minmax(75px, 1fr)) minmax(162px, 2fr) 58px;
+  padding: 10px 12px;
+}
+.marker-table-heading {
+  background: var(--panel); border-bottom: 1px solid var(--line);
+  color: var(--dim); font-size: 12px; font-weight: 600;
+}
+.marker-grid > label, .marker-grid > .marker-row-more { min-width: 0; }
+.marker-row + .marker-row { border-top: 1px solid var(--line); }
+.marker-grid input, .marker-grid select { min-width: 0; font-variant-numeric: tabular-nums; }
+.marker-field-label {
+  position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip-path: inset(50%); white-space: nowrap;
+}
+.marker-row-more { grid-column: 1 / -1; padding: 10px 0 1px; border-top: 1px solid var(--line); }
+.marker-row-more p { color: var(--dim); margin: 0 0 7px; overflow-wrap: anywhere; }
+.marker-row-more label { max-width: 36rem; }
+.marker-row-more .marker-actions { margin-top: 10px; }
+.marker-row-more a { display: inline-flex; align-items: center; }
+.marker-empty { color: var(--dim); padding: 12px; margin: 0; }
+#markerLayoutNote, #markerCalibSummary { margin: 0; }
+#markerLayoutNote { color: var(--dim); font-size: 13px; }
+#markerLayoutNote[data-state="draft"], .marker-result[data-state="warning"] > p { color: var(--warn); }
+.marker-result[data-state="error"] > p, #markerLayoutNote[data-state="error"] { color: var(--bad); }
+.marker-result[data-state="ready"] > p { color: var(--ok); }
+.marker-result { padding: 12px; border: 1px solid var(--line); border-radius: 8px; margin-top: 14px; }
+.marker-result details { margin-top: 8px; }
+.marker-result pre { max-height: 230px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.marker-extra { border-top: 1px solid var(--line); margin-top: 14px; }
+.marker-extra > details { padding: 9px 0 0; }
+.marker-extra summary, .marker-result summary { width: fit-content; cursor: pointer; color: var(--dim); }
+.marker-extra p { margin: 8px 0 0; color: var(--dim); line-height: 1.55; }
+.marker-session-actions { margin-top: 8px; }
+.marker-session-actions select { width: min(26rem, 100%); }
+@media (max-width: 820px) {
+  .marker-table-heading { display: none; }
+  .marker-row { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  .marker-row > label { grid-column: span 2; }
+  .marker-row > label:nth-child(-n+2) { grid-column: span 3; }
+  .marker-row > label:nth-child(6) { grid-column: span 4; }
+  .marker-row > [data-marker-more] { grid-column: span 2; align-self: end; justify-self: start; }
+  .marker-field-label { position: static; width: auto; height: auto; clip-path: none; }
+}
+@media (max-width: 480px) {
+  .marker-panel-top, .marker-panel-footer { align-items: stretch; flex-direction: column; }
+  .marker-actions > button { flex: 1; padding-inline: 8px; }
+  .marker-grid { padding: 10px; gap: 8px; }
+}
 
 #notice:empty{display:none}
 
